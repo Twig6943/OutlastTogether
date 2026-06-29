@@ -1,19 +1,22 @@
-class OLTogetherLink extends TcpLink;
+class OLTogetherLink extends TcpLink
+config(Multiplayer)
 
 var OLTogetherController ControllerOwner;
 var bool bIsConnected;
+var config string IP;
+var config string Port;
 
 event PostBeginPlay()
 {
     super.PostBeginPlay();
     LinkMode = MODE_Line;
     ReceiveMode = RMODE_Event;
-    Resolve("127.0.0.1");
+    Resolve(IP);
 }
 
 event Resolved(IpAddr Addr)
 {
-    Addr.Port = 7777;
+    Addr.Port = Port;
     BindPort();
     Open(Addr);
 }
@@ -36,4 +39,10 @@ event ReceivedLine(string Line)
     {
         ControllerOwner.OnReceiveData(Line);
     }
+}
+
+DefaultProperties
+{
+    IP="127.0.0.1"
+    Port="7777"
 }
