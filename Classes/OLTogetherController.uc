@@ -12,10 +12,11 @@ var rotator LastReceivedRot;
 var bool bHasReceivedData;
 
 // --- Last known remote states (for change detection) ---
-var bool bLastRemoteCrouched;
+var int LastRemoteSpecialMove;
 var bool bLastRemoteCamcorder;
 var int LastRemoteCamcorderState;
 var bool bDummyCrouched;
+var name LastMovementAnim;
 
 // How fast the dummy smoothly slides toward the target position.
 var float InterpSpeed;
@@ -35,6 +36,7 @@ event PlayerTick(float DeltaTime)
     local vector ExtrapolatedLoc, SmoothedLoc, AnimVel;
     local rotator SmoothedRot;
     local AIController AIC;
+    local int LocalSpecialMoveInt;
 
     super.PlayerTick(DeltaTime);
 
@@ -43,14 +45,21 @@ event PlayerTick(float DeltaTime)
     {
         if (WorldInfo.TimeSeconds - LastSendTime > 0.05)
         {
+            LocalSpecialMoveInt = 0;
+            if (OLHero(Pawn) != None)
+            {
+                LocalSpecialMoveInt = int(OLHero(Pawn).SpecialMove);
+            }
+
             LastSendTime = WorldInfo.TimeSeconds;
             Payload = "LOC,"
                 $ Pawn.Location.X $ "," $ Pawn.Location.Y $ "," $ Pawn.Location.Z $ ","
                 $ Pawn.Rotation.Pitch $ "," $ Pawn.Rotation.Yaw $ ","
                 $ Pawn.Velocity.X $ "," $ Pawn.Velocity.Y $ "," $ Pawn.Velocity.Z $ ","
-                $ int(Pawn.bIsCrouched) $ ","
+                $ LocalSpecialMoveInt $ "," 
                 $ (OLHero(Pawn) != None ? int(OLHero(Pawn).bCamcorderDesired) : 0) $ ","
                 $ (OLHero(Pawn) != None ? int(OLHero(Pawn).CamcorderState) : 0);
+            `log("OLTogetherController: Sending LocalSpecialMove=" $ LocalSpecialMoveInt);
             NetworkLink.SendText(Payload $ "\n");
         }
     }
@@ -65,15 +74,12 @@ event PlayerTick(float DeltaTime)
             DummyPlayer.SetCollision(true, true);
             DummyPlayer.bCollideWorld = false;
 
-            // Use a plain AIController — safe, no crash, drives AnimTree locomotion
             AIC = Spawn(class'AIController');
             if (AIC != None)
                 AIC.Possess(DummyPlayer, false);
 
             if (OLHero(DummyPlayer) != None)
             {
-                // Hide the 1st-person mesh to prevent Z-fighting with the ShadowProxy.
-                // We still keep it ticking invisibly so it drives the ShadowProxy AnimTree.
                 if (OLHero(DummyPlayer).Mesh != None)
                 {
                     OLHero(DummyPlayer).Mesh.SetHidden(true);
@@ -81,7 +87,6 @@ event PlayerTick(float DeltaTime)
                     OLHero(DummyPlayer).Mesh.bUpdateSkelWhenNotRendered = true;
                     OLHero(DummyPlayer).Mesh.bTickAnimNodesWhenNotRendered = true;
                 }
-                // Make the 3rd-person shadow proxy visible
                 if (OLHero(DummyPlayer).ShadowProxy != None)
                 {
                     OLHero(DummyPlayer).ShadowProxy.SetOwnerNoSee(false);
@@ -89,15 +94,11 @@ event PlayerTick(float DeltaTime)
                     OLHero(DummyPlayer).ShadowProxy.bUpdateSkelWhenNotRendered = true;
                     OLHero(DummyPlayer).ShadowProxy.bTickAnimNodesWhenNotRendered = true;
                 }
-                // Show the head on the other player.
-                // ShadowProxy uses Miles_beheaded (no head) so HeadMeshComp attaches
-                // cleanly to the neck bone with zero Z-fighting risk.
                 if (OLHero(DummyPlayer).HeadMesh != None)
                 {
                     OLHero(DummyPlayer).HeadMesh.SetHidden(false);
                     OLHero(DummyPlayer).HeadMesh.SetOwnerNoSee(false);
                 }
-                // Keep camcorder prop hidden until we receive the camcorder state
                 if (OLHero(DummyPlayer).CameraMeshShadowProxy != None)
                     OLHero(DummyPlayer).CameraMeshShadowProxy.SetHidden(true);
             }
@@ -107,30 +108,81 @@ event PlayerTick(float DeltaTime)
     // --- Dead Reckoning + Interpolation ---
     if (DummyPlayer != None && bHasReceivedData)
     {
-        // Extrapolate position using last known velocity
         ExtrapolatedLoc = LastReceivedLoc;
         ExtrapolatedLoc.X += LastReceivedVel.X * DeltaTime;
         ExtrapolatedLoc.Y += LastReceivedVel.Y * DeltaTime;
         ExtrapolatedLoc.Z += LastReceivedVel.Z * DeltaTime;
         LastReceivedLoc = ExtrapolatedLoc;
 
-        // Smoothly slide dummy toward extrapolated position
         SmoothedLoc = VInterpTo(DummyPlayer.Location, ExtrapolatedLoc, DeltaTime, InterpSpeed);
         DummyPlayer.SetLocation(SmoothedLoc);
 
-        // Smooth rotation
         SmoothedRot = RInterpTo(DummyPlayer.Rotation, LastReceivedRot, DeltaTime, InterpSpeed);
         DummyPlayer.SetRotation(SmoothedRot);
 
-        // Feed horizontal velocity to the AnimTree so locomotion plays correctly
         AnimVel = LastReceivedVel;
         AnimVel.Z = 0;
         DummyPlayer.Velocity = AnimVel;
         DummyPlayer.Acceleration = AnimVel;
+
+        UpdateDummyMovementAnim();
     }
 }
 
-// Called via SetTimer to hide the camcorder prop after the lower animation finishes.
+function UpdateDummyMovementAnim()
+{
+    local OLHero DummyHero;
+    local vector Vel2D, Forward, Right, NormVel;
+    local rotator RightRot;
+    local float Speed, ForwardDot, RightDot;
+    local name DesiredAnim;
+    local float YawRad;
+
+    DummyHero = OLHero(DummyPlayer);
+    if (DummyHero == None || DummyHero.ShadowProxy == None)
+        return;
+
+    Vel2D = LastReceivedVel;
+    Vel2D.Z = 0;
+    Speed = VSize(Vel2D);
+    if (!bDummyCrouched)
+        return;
+
+    if (Speed < 20.0)
+    {
+        DesiredAnim = 'player_crouch_idle';
+    }
+    else
+    {
+
+        YawRad = DummyPlayer.Rotation.Yaw * (3.1415927 / 180.0);
+        Forward.X = Cos(YawRad);
+        Forward.Y = Sin(YawRad);
+        Forward.Z = 0;
+        Right.X = Cos(YawRad + 1.5707963);
+        Right.Y = Sin(YawRad + 1.5707963);
+        Right.Z = 0;
+        NormVel = Vel2D / Speed;
+        ForwardDot = (NormVel.X * Forward.X) + (NormVel.Y * Forward.Y);
+        RightDot = (NormVel.X * Right.X) + (NormVel.Y * Right.Y);
+
+        if (ForwardDot > 0.7)
+            DesiredAnim = 'player_crouch_forward';
+        else if (ForwardDot < -0.7)
+            DesiredAnim = 'player_crouch_backward';
+        else if (RightDot > 0.0)
+            DesiredAnim = 'player_crouch_strafe_right';
+        else
+            DesiredAnim = 'player_crouch_strafe_left';
+    }
+
+    if (DesiredAnim != LastMovementAnim)
+    {
+        LastMovementAnim = DesiredAnim;
+        DummyHero.ShadowProxy.PlayAnim(DesiredAnim, 1.0, false, true, 0.05);
+    }
+}
+
 function HideCamcorderProp()
 {
     local OLHero DummyHero;
@@ -139,19 +191,31 @@ function HideCamcorderProp()
         DummyHero.CameraMeshShadowProxy.SetHidden(true);
 }
 
-// Called via SetTimer after the raise animation finishes (0.6667s).
-// Plays the camcorder hold-idle loop until the player lowers it.
+function PlayCrouchIdleAnim()
+{
+    local OLHero DummyHero;
+    DummyHero = OLHero(DummyPlayer);
+    if (DummyHero == None)
+        return;
+
+    if (DummyHero.ShadowProxy != None)
+        DummyHero.ShadowProxy.PlayAnim(
+            bDummyCrouched ? 'player_crouch_idle' : 'player_idle', 1.0, true, true, 0.05);
+
+    if (DummyHero.ShadowProxyRightArmAnimSlot != None && DummyHero.bCamcorderDesired)
+        DummyHero.ShadowProxyRightArmAnimSlot.PlayCustomAnim(
+            bDummyCrouched ? 'player_crouch_camcorder_idle' : 'player_camcorder_idle', 1.0, 0.05, -1.0, true, true);
+}
+
 function PlayCamcorderIdleAnim()
 {
     local OLHero DummyHero;
     DummyHero = OLHero(DummyPlayer);
     if (DummyHero != None && DummyHero.ShadowProxyRightArmAnimSlot != None)
         DummyHero.ShadowProxyRightArmAnimSlot.PlayCustomAnim(
-            'player_camcorder_idle', 1.0, 0.05, -1.0, true, true);
+            bDummyCrouched ? 'player_crouch_camcorder_idle' : 'player_camcorder_idle', 1.0, 0.05, -1.0, true, true);
 }
 
-// Called via SetTimer after the inactive reload animation finishes.
-// Hides the camcorder prop and stops arm animations.
 function FinishInactiveReload()
 {
     local OLHero DummyHero;
@@ -172,7 +236,8 @@ function OnReceiveData(string Data)
     local array<string> Parts;
     local vector NewLoc, NewVel;
     local rotator NewRot;
-    local bool bNewCrouched, bNewCamcorder;
+    local int NewSpecialMove;
+    local bool bNewCamcorder;
     local int NewCamcorderState;
     local OLHero DummyHero;
 
@@ -188,7 +253,7 @@ function OnReceiveData(string Data)
         NewVel.X = float(Parts[6]);
         NewVel.Y = float(Parts[7]);
         NewVel.Z = float(Parts[8]);
-        bNewCrouched = int(Parts[9]) != 0;
+        NewSpecialMove = int(Parts[9]);
         bNewCamcorder = int(Parts[10]) != 0;
         NewCamcorderState = int(Parts[11]);
 
@@ -201,19 +266,75 @@ function OnReceiveData(string Data)
         {
             DummyHero = OLHero(DummyPlayer);
 
-            // --- Sync Crouch ---
-            if (bNewCrouched != bLastRemoteCrouched)
+            // --- Detect and Sync Remote Player Special Moves ---
+            if (NewSpecialMove != LastRemoteSpecialMove)
             {
-                bLastRemoteCrouched = bNewCrouched;
-                bDummyCrouched = bNewCrouched;
-                if (bNewCrouched)
-                    DummyPlayer.ForceCrouch();
-                else
-                    DummyPlayer.UnCrouch();
+                `log("OLTogetherController: NewSpecialMove=" $ NewSpecialMove);
+                LastRemoteSpecialMove = NewSpecialMove;
 
                 if (DummyHero != None)
-                    DummyHero.ShadowProxy.PlayAnim(
-                        bNewCrouched ? 'player_stand_to_crouch' : 'player_crouch_to_stand', 1.0, false, true);
+                {
+                    // FIXED: Using clear explicit enum conversion matching SMT_Crouch/SMT_Uncrouch definitions directly
+                    if (ESpecialMoveType(NewSpecialMove) == SMT_Crouch)
+                    {
+                        `log("OLTogetherController: Detected SMT_Crouch");
+                        bDummyCrouched = true;
+
+                        // Prefer using the pawn's StartSpecialMove to ensure game logic and anims run
+                        DummyHero.StartSpecialMove(ESpecialMoveType(NewSpecialMove));
+                        if (DummyHero.ShadowProxy != None)
+                        {
+                            DummyHero.ShadowProxy.PlayAnim('player_stand_to_crouch', 1.0, false, true, 0.15);
+                        }
+                        if (DummyHero.Mesh != None)
+                        {
+                            DummyHero.Mesh.PlayAnim('player_stand_to_crouch', 1.0, false, true, 0.15);
+                        }
+
+                        // Mirror the real game: SMT_Crouch transitions back to SMT_None, then hold crouch idle.
+                        DummyHero.SpecialMove = SMT_None;
+                        DummyHero.bPlayingSpecialMoveAnim = false;
+                        DummyHero.bDelayedSpecialMoveAnim = false;
+                        DummyHero.bPendingSpecialMoveAnims = false;
+                        DummyHero.PlayingSpecialMoveAnims.Length = 0;
+                        DummyHero.LocomotionMode = LM_Walk;
+
+                        ClearTimer('PlayCrouchIdleAnim');
+                        SetTimer(0.15, false, 'PlayCrouchIdleAnim');
+                    }
+                    else if (ESpecialMoveType(NewSpecialMove) == SMT_None && bDummyCrouched)
+                    {
+                        `log("OLTogetherController: Detected SMT_None while crouched");
+
+                        // Stay crouched until explicit uncrouch arrives.
+                        ClearTimer('PlayCrouchIdleAnim');
+                        SetTimer(0.10, false, 'PlayCrouchIdleAnim');
+                    }
+                    else if (ESpecialMoveType(NewSpecialMove) == SMT_Uncrouch)
+                    {
+                        `log("OLTogetherController: Detected SMT_Uncrouch");
+                        // Clear crouched state for camcorder/animation selection
+                        bDummyCrouched = false;
+
+                        // Trigger the pawn's special-move exit to restore standard locomotion
+                        DummyHero.StartSpecialMove(ESpecialMoveType(NewSpecialMove));
+                        // Ensure the pawn's special-move state is cleared so animations resume
+                        DummyHero.SpecialMove = SMT_None;
+                        DummyHero.bPlayingSpecialMoveAnim = false;
+                        DummyHero.bDelayedSpecialMoveAnim = false;
+                        DummyHero.bPendingSpecialMoveAnims = false;
+                        DummyHero.PlayingSpecialMoveAnims.Length = 0;
+                        DummyHero.LocomotionMode = LM_Walk;
+                        if (DummyHero.ShadowProxy != None)
+                        {
+                            DummyHero.ShadowProxy.PlayAnim('player_crouch_to_stand', 1.0, false, true, 0.15);
+                        }
+                        if (DummyHero.Mesh != None)
+                        {
+                            DummyHero.Mesh.PlayAnim('player_crouch_to_stand', 1.0, false, true, 0.15);
+                        }
+                    }
+                }
             }
 
             // --- Sync Camcorder ---
@@ -268,8 +389,7 @@ function OnReceiveData(string Data)
                         DummyHero.ShadowProxyRightArmAnimSlot.PlayCustomAnim(
                             bDummyCrouched ? 'player_crouch_camcorder_reload_inactive' : 'player_camcorder_reload_inactive', 1.0, 0.15, 0.05, false, true);
                     if (DummyHero.ShadowProxyLeftArmAnimSlot != None)
-                        DummyHero.ShadowProxyLeftArmAnimSlot.PlayCustomAnim(
-                            bDummyCrouched ? 'player_crouch_camcorder_reload_inactive' : 'player_camcorder_reload_inactive', 1.0, 0.15, 0.4, false, true);
+                        DummyHero.ShadowProxyLeftArmAnimSlot.StopCustomAnim(0.15);
                     SetTimer(2.85, false, 'FinishInactiveReload');
                 }
                 else if (LastRemoteCamcorderState == 4 || LastRemoteCamcorderState == 5)
@@ -303,6 +423,6 @@ DefaultProperties
     bHasReceivedData=false
     InterpSpeed=12.0
     bLastRemoteCamcorder=false
-    bLastRemoteCrouched=false
+    LastRemoteSpecialMove=0
     LastRemoteCamcorderState=0
 }
