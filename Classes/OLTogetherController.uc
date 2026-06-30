@@ -4,6 +4,16 @@ var OLTogetherLink NetworkLink;
 var Pawn DummyPlayer;
 var int MyRole;
 var float LastSendTime;
+var float LastPingTime;
+var int PingMs;
+var string ServerIP;
+var string ServerPort;
+var string ConnectionStatus;
+var string PlayerName;
+var string DummyPlayerName;
+var bool bNameAnnounced;
+var bool bChatMode;
+var string ChatInput;
 
 // --- Dead Reckoning & Interpolation state ---
 var vector LastReceivedLoc;
@@ -21,13 +31,77 @@ var name LastMovementAnim;
 // How fast the dummy smoothly slides toward the target position.
 var float InterpSpeed;
 
+function string GetUrlOptionValue(string Url, string OptionName)
+{
+    local array<string> Parts;
+    local string Prefix;
+    local int I;
+    local int Pos;
+
+    Prefix = OptionName $ "=";
+    Parts = SplitString(Url, "?", true);
+    for (I = 0; I < Parts.Length; I++)
+    {
+        Pos = InStr(Parts[I], Prefix);
+        if (Pos == 0)
+            return Right(Parts[I], Len(Parts[I]) - Len(Prefix));
+    }
+    return "";
+}
+
 event PostBeginPlay()
 {
+    local string Url;
+    local string IpOption;
+    local string PortOption;
+    local string RoleOption;
+    local string PlayerNameOption;
+
     super.PostBeginPlay();
-    MyRole = int(WorldInfo.Game.ParseOption(WorldInfo.GetLocalURL(), "Role"));
+
+    Url = WorldInfo.GetLocalURL();
+
+    RoleOption = WorldInfo.Game.ParseOption(Url, "Role");
+    if (RoleOption == "")
+        RoleOption = GetUrlOptionValue(Url, "Role");
+    MyRole = int(RoleOption);
+
+    ServerIP = "127.0.0.1";
+    ServerPort = "7777";
+    PlayerName = "";
+    IpOption = WorldInfo.Game.ParseOption(Url, "ServerIP");
+    if (IpOption == "")
+        IpOption = GetUrlOptionValue(Url, "ServerIP");
+    PortOption = WorldInfo.Game.ParseOption(Url, "ServerPort");
+    if (PortOption == "")
+        PortOption = GetUrlOptionValue(Url, "ServerPort");
+    PlayerNameOption = WorldInfo.Game.ParseOption(Url, "PlayerName");
+    if (PlayerNameOption == "")
+        PlayerNameOption = GetUrlOptionValue(Url, "PlayerName");
+
+    if (IpOption != "")
+        ServerIP = IpOption;
+    if (PortOption != "")
+        ServerPort = PortOption;
+    if (PlayerNameOption != "")
+        PlayerName = PlayerNameOption;
+    if (PlayerName == "")
+        PlayerName = "Player" $ (MyRole == 0 ? "Host" : "Client");
+
+    ConnectionStatus = "Connecting...";
+    LastPingTime = 0.0;
+    PingMs = 0;
+    bNameAnnounced = false;
+    bChatMode = false;
+    ChatInput = "";
+
     NetworkLink = Spawn(class'OLTogetherLink', self);
     if (NetworkLink != None)
+    {
         NetworkLink.ControllerOwner = self;
+        NetworkLink.IP = ServerIP;
+        NetworkLink.Port = ServerPort;
+    }
 }
 
 event PlayerTick(float DeltaTime)
@@ -39,6 +113,27 @@ event PlayerTick(float DeltaTime)
     local int LocalSpecialMoveInt;
 
     super.PlayerTick(DeltaTime);
+
+    // --- Try to reconnect if needed ---
+    if (NetworkLink != None && !NetworkLink.bIsConnected && WorldInfo.TimeSeconds - LastSendTime > 5.0)
+    {
+        LastSendTime = WorldInfo.TimeSeconds;
+        NetworkLink.Reconnect();
+    }
+
+    // --- Announce player name once when connected ---
+    if (NetworkLink != None && NetworkLink.bIsConnected && !bNameAnnounced)
+    {
+        NetworkLink.SendText("NAME," $ PlayerName $ "\n");
+        bNameAnnounced = true;
+    }
+
+    // --- Send ping periodically ---
+    if (NetworkLink != None && NetworkLink.bIsConnected && WorldInfo.TimeSeconds - LastPingTime > 1.0)
+    {
+        LastPingTime = WorldInfo.TimeSeconds;
+        NetworkLink.SendText("PING," $ string(int(WorldInfo.TimeSeconds * 1000.0)) $ "\n");
+    }
 
     // --- Send local player state ---
     if (NetworkLink != None && NetworkLink.bIsConnected && Pawn != None)
@@ -71,7 +166,7 @@ event PlayerTick(float DeltaTime)
         if (DummyPlayer != None)
         {
             DummyPlayer.SetPhysics(PHYS_Walking);
-            DummyPlayer.SetCollision(true, true);
+            DummyPlayer.SetCollision(false, false, false);
             DummyPlayer.bCollideWorld = false;
 
             AIC = Spawn(class'AIController');
@@ -127,6 +222,83 @@ event PlayerTick(float DeltaTime)
 
         UpdateDummyMovementAnim();
     }
+}
+
+exec function SetServerIP(string NewIP)
+{
+    if (NewIP == "")
+        return;
+
+    ServerIP = NewIP;
+    if (NetworkLink != None)
+        NetworkLink.SetServer(ServerIP, ServerPort);
+}
+
+exec function SetServerPort(string NewPort)
+{
+    if (NewPort == "")
+        return;
+
+    ServerPort = NewPort;
+    if (NetworkLink != None)
+        NetworkLink.SetServer(ServerIP, ServerPort);
+}
+
+exec function ConnectToServer()
+{
+    if (NetworkLink != None)
+        NetworkLink.Reconnect();
+}
+
+exec function SetPlayerName(string NewName)
+{
+    if (NewName == "")
+        return;
+
+    PlayerName = NewName;
+    bNameAnnounced = false;
+    if (NetworkLink != None && NetworkLink.bIsConnected)
+        NetworkLink.SendText("NAME," $ PlayerName $ "\n");
+}
+
+exec function Chat(string Message)
+{
+    if (Message == "")
+        return;
+
+    if (NetworkLink != None && NetworkLink.bIsConnected)
+    {
+        NetworkLink.SendText("CHAT," $ PlayerName $ ": " $ Message $ "\n");
+        AddChatLine("You: " $ Message);
+    }
+    else
+    {
+        AddChatLine("Chat failed - not connected.");
+    }
+}
+
+function AddChatLine(string Msg)
+{
+    local OLTogetherHUD H;
+
+    if (Msg == "")
+        return;
+
+    H = OLTogetherHUD(HUD);
+    if (H != None)
+        H.AddChatLine(Msg);
+}
+
+function AddNotification(string Msg)
+{
+    local OLTogetherHUD H;
+
+    if (Msg == "")
+        return;
+
+    H = OLTogetherHUD(HUD);
+    if (H != None)
+        H.AddNotification(Msg);
 }
 
 function UpdateDummyMovementAnim()
@@ -234,12 +406,48 @@ function FinishInactiveReload()
 function OnReceiveData(string Data)
 {
     local array<string> Parts;
+    local array<string> PingParts;
     local vector NewLoc, NewVel;
     local rotator NewRot;
     local int NewSpecialMove;
     local bool bNewCamcorder;
     local int NewCamcorderState;
+    local float SentMs;
+    local float NowMs;
     local OLHero DummyHero;
+
+    if (Left(Data, 5) == "CHAT,")
+    {
+        AddChatLine(Right(Data, Len(Data) - 5));
+        return;
+    }
+
+    if (Left(Data, 5) == "NAME,")
+    {
+        DummyPlayerName = Right(Data, Len(Data) - 5);
+        if (DummyPlayerName == "")
+            DummyPlayerName = "Player";
+        AddNotification(DummyPlayerName $ " joined the server.");
+        return;
+    }
+
+    if (Left(Data, 5) == "PONG,")
+    {
+        PingParts = SplitString(Data, ",", true);
+        if (PingParts.Length >= 2)
+        {
+            SentMs = float(PingParts[1]);
+            NowMs = WorldInfo.TimeSeconds * 1000.0;
+            PingMs = int(NowMs - SentMs);
+        }
+        return;
+    }
+
+    if (Left(Data, 6) == "NOTIF,")
+    {
+        AddNotification(Right(Data, Len(Data) - 6));
+        return;
+    }
 
     Parts = SplitString(Data, ",", true);
     if (Parts.Length >= 12 && Parts[0] == "LOC")
@@ -420,9 +628,11 @@ function OnReceiveData(string Data)
 
 DefaultProperties
 {
+    InputClass=class'Multiplayer.OLTogetherInput'
     bHasReceivedData=false
     InterpSpeed=12.0
     bLastRemoteCamcorder=false
     LastRemoteSpecialMove=0
     LastRemoteCamcorderState=0
 }
+

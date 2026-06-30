@@ -67,25 +67,6 @@ powershell -Command "Start-Process -WindowStyle Normal -FilePath '%PY%' -Argumen
 REM Wait for bridge to initialize
 timeout /t 2 /nobreak >nul
 
-REM ------ Launch games ------
-echo [4/4] Launching game instances...
-echo.
-echo Host instance will start first, then Joiner.
-echo Wait for both to load and connect.
-
-REM Launch Host
-echo Starting HOST (port 9997, Role=0)...
-powershell -Command "Start-Process -WindowStyle Normal -FilePath '%GAME%' -ArgumentList 'Intro_Persistent?game=Multiplayer.OLTogetherGame?Role=0?QuickPlay','-log','-WINDOWED','-ResX=800','-ResY=600','-WinX=50','-WinY=200'"
-
-REM Wait between launches
-timeout /t 6 /nobreak >nul
-
-REM Launch Joiner
-echo Starting JOINER (port 9998, Role=1)...
-powershell -Command "Start-Process -WindowStyle Normal -FilePath '%GAME%' -ArgumentList 'Intro_Persistent?game=Multiplayer.OLTogetherGame?Role=1?QuickPlay','-log','-WINDOWED','-ResX=800','-ResY=600','-WinX=860','-WinY=200'"
-
-echo.
-echo Both instances launched. Check the HUD for role assignment.
 echo Close the bridge window to shut down.
 echo.
 exit /b 0
