@@ -12,6 +12,8 @@ var string ConnectionStatus;
 var string PlayerName;
 var string DummyPlayerName;
 var bool bNameAnnounced;
+var string LastAnnouncedName;
+var float LastNameAnnounceTime;
 var bool bChatMode;
 var string ChatInput;
 
@@ -28,8 +30,12 @@ var int LastRemoteCamcorderState;
 var bool bDummyCrouched;
 var name LastMovementAnim;
 
+// --- Running state from local player ---
+var bool bLocalRunning;
+
 // How fast the dummy smoothly slides toward the target position.
 var float InterpSpeed;
+var int IdleRetryAttempts;
 
 function string GetUrlOptionValue(string Url, string OptionName)
 {
@@ -86,12 +92,14 @@ event PostBeginPlay()
     if (PlayerNameOption != "")
         PlayerName = PlayerNameOption;
     if (PlayerName == "")
-        PlayerName = "Player" $ (MyRole == 0 ? "Host" : "Client");
+        PlayerName = "Player" @ (MyRole == 0 ? "Host" : "Client");
 
     ConnectionStatus = "Connecting...";
     LastPingTime = 0.0;
     PingMs = 0;
     bNameAnnounced = false;
+    LastAnnouncedName = "";
+    LastNameAnnounceTime = -999.0;
     bChatMode = false;
     ChatInput = "";
 
@@ -101,6 +109,7 @@ event PostBeginPlay()
         NetworkLink.ControllerOwner = self;
         NetworkLink.IP = ServerIP;
         NetworkLink.Port = ServerPort;
+        NetworkLink.SetServer(ServerIP, ServerPort);
     }
 }
 
@@ -121,11 +130,16 @@ event PlayerTick(float DeltaTime)
         NetworkLink.Reconnect();
     }
 
-    // --- Announce player name once when connected ---
-    if (NetworkLink != None && NetworkLink.bIsConnected && !bNameAnnounced)
+    // --- Announce player name when connected or when it changes ---
+    if (NetworkLink != None && NetworkLink.bIsConnected)
     {
-        NetworkLink.SendText("NAME," $ PlayerName $ "\n");
-        bNameAnnounced = true;
+        if (!bNameAnnounced || PlayerName != LastAnnouncedName || WorldInfo.TimeSeconds - LastNameAnnounceTime > 1.0)
+        {
+            NetworkLink.SendText("NAME," $ PlayerName $ "\n");
+            bNameAnnounced = true;
+            LastAnnouncedName = PlayerName;
+            LastNameAnnounceTime = WorldInfo.TimeSeconds;
+        }
     }
 
     // --- Send ping periodically ---
@@ -141,9 +155,11 @@ event PlayerTick(float DeltaTime)
         if (WorldInfo.TimeSeconds - LastSendTime > 0.05)
         {
             LocalSpecialMoveInt = 0;
+            bLocalRunning = false;
             if (OLHero(Pawn) != None)
             {
                 LocalSpecialMoveInt = int(OLHero(Pawn).SpecialMove);
+                bLocalRunning = OLHero(Pawn).IsRunning();
             }
 
             LastSendTime = WorldInfo.TimeSeconds;
@@ -153,7 +169,8 @@ event PlayerTick(float DeltaTime)
                 $ Pawn.Velocity.X $ "," $ Pawn.Velocity.Y $ "," $ Pawn.Velocity.Z $ ","
                 $ LocalSpecialMoveInt $ "," 
                 $ (OLHero(Pawn) != None ? int(OLHero(Pawn).bCamcorderDesired) : 0) $ ","
-                $ (OLHero(Pawn) != None ? int(OLHero(Pawn).CamcorderState) : 0);
+                $ (OLHero(Pawn) != None ? int(OLHero(Pawn).CamcorderState) : 0) $ ","
+                $ (bLocalRunning ? 1 : 0);
             `log("OLTogetherController: Sending LocalSpecialMove=" $ LocalSpecialMoveInt);
             NetworkLink.SendText(Payload $ "\n");
         }
@@ -213,7 +230,11 @@ event PlayerTick(float DeltaTime)
         DummyPlayer.SetLocation(SmoothedLoc);
 
         SmoothedRot = RInterpTo(DummyPlayer.Rotation, LastReceivedRot, DeltaTime, InterpSpeed);
+        SmoothedRot.Pitch = 0;
         DummyPlayer.SetRotation(SmoothedRot);
+
+        if (OLTogetherHero(DummyPlayer) != None)
+            OLTogetherHero(DummyPlayer).RemotePitch = LastReceivedRot.Pitch;
 
         AnimVel = LastReceivedVel;
         AnimVel.Z = 0;
@@ -257,6 +278,7 @@ exec function SetPlayerName(string NewName)
 
     PlayerName = NewName;
     bNameAnnounced = false;
+    LastAnnouncedName = "";
     if (NetworkLink != None && NetworkLink.bIsConnected)
         NetworkLink.SendText("NAME," $ PlayerName $ "\n");
 }
@@ -305,7 +327,6 @@ function UpdateDummyMovementAnim()
 {
     local OLHero DummyHero;
     local vector Vel2D, Forward, Right, NormVel;
-    local rotator RightRot;
     local float Speed, ForwardDot, RightDot;
     local name DesiredAnim;
     local float YawRad;
@@ -317,41 +338,75 @@ function UpdateDummyMovementAnim()
     Vel2D = LastReceivedVel;
     Vel2D.Z = 0;
     Speed = VSize(Vel2D);
-    if (!bDummyCrouched)
-        return;
 
-    if (Speed < 20.0)
+    if (bDummyCrouched)
     {
-        DesiredAnim = 'player_crouch_idle';
+        if (Speed < 20.0)
+        {
+            DesiredAnim = 'player_crouch_idle';
+        }
+        else
+        {
+            YawRad = DummyPlayer.Rotation.Yaw * (3.1415927 / 180.0);
+            Forward.X = Cos(YawRad);
+            Forward.Y = Sin(YawRad);
+            Forward.Z = 0;
+            Right.X = Cos(YawRad + 1.5707963);
+            Right.Y = Sin(YawRad + 1.5707963);
+            Right.Z = 0;
+            NormVel = Vel2D / Speed;
+            ForwardDot = (NormVel.X * Forward.X) + (NormVel.Y * Forward.Y);
+            RightDot = (NormVel.X * Right.X) + (NormVel.Y * Right.Y);
+
+            if (ForwardDot > 0.7)
+                DesiredAnim = 'player_crouch_forward';
+            else if (ForwardDot < -0.7)
+                DesiredAnim = 'player_crouch_backward';
+            else if (RightDot > 0.0)
+                DesiredAnim = 'player_crouch_strafe_right';
+            else
+                DesiredAnim = 'player_crouch_strafe_left';
+        }
     }
     else
     {
-
-        YawRad = DummyPlayer.Rotation.Yaw * (3.1415927 / 180.0);
-        Forward.X = Cos(YawRad);
-        Forward.Y = Sin(YawRad);
-        Forward.Z = 0;
-        Right.X = Cos(YawRad + 1.5707963);
-        Right.Y = Sin(YawRad + 1.5707963);
-        Right.Z = 0;
-        NormVel = Vel2D / Speed;
-        ForwardDot = (NormVel.X * Forward.X) + (NormVel.Y * Forward.Y);
-        RightDot = (NormVel.X * Right.X) + (NormVel.Y * Right.Y);
-
-        if (ForwardDot > 0.7)
-            DesiredAnim = 'player_crouch_forward';
-        else if (ForwardDot < -0.7)
-            DesiredAnim = 'player_crouch_backward';
-        else if (RightDot > 0.0)
-            DesiredAnim = 'player_crouch_strafe_right';
+        if (Speed < 20.0)
+        {
+            DesiredAnim = 'player_idle';
+        }
         else
-            DesiredAnim = 'player_crouch_strafe_left';
+        {
+            YawRad = DummyPlayer.Rotation.Yaw * (3.1415927 / 180.0);
+            Forward.X = Cos(YawRad);
+            Forward.Y = Sin(YawRad);
+            Forward.Z = 0;
+            Right.X = Cos(YawRad + 1.5707963);
+            Right.Y = Sin(YawRad + 1.5707963);
+            Right.Z = 0;
+            NormVel = Vel2D / Speed;
+            ForwardDot = (NormVel.X * Forward.X) + (NormVel.Y * Forward.Y);
+            RightDot = (NormVel.X * Right.X) + (NormVel.Y * Right.Y);
+
+            if (ForwardDot > 0.7)
+            {
+                if (Speed > 400.0)
+                    DesiredAnim = 'player_run_forward';
+                else
+                    DesiredAnim = 'player_walk_forward';
+            }
+            else if (ForwardDot < -0.7)
+                DesiredAnim = 'player_walk_backward';
+            else if (RightDot > 0.0)
+                DesiredAnim = 'player_strafe_right';
+            else
+                DesiredAnim = 'player_strafe_left';
+        }
     }
 
     if (DesiredAnim != LastMovementAnim)
     {
         LastMovementAnim = DesiredAnim;
-        DummyHero.ShadowProxy.PlayAnim(DesiredAnim, 1.0, false, true, 0.05);
+        DummyHero.ShadowProxy.PlayAnim(DesiredAnim, 1.0, false, true, 0.15);
     }
 }
 
@@ -412,6 +467,7 @@ function OnReceiveData(string Data)
     local int NewSpecialMove;
     local bool bNewCamcorder;
     local int NewCamcorderState;
+    local bool bRemoteRunning;
     local float SentMs;
     local float NowMs;
     local OLHero DummyHero;
@@ -427,7 +483,6 @@ function OnReceiveData(string Data)
         DummyPlayerName = Right(Data, Len(Data) - 5);
         if (DummyPlayerName == "")
             DummyPlayerName = "Player";
-        AddNotification(DummyPlayerName $ " joined the server.");
         return;
     }
 
@@ -464,6 +519,7 @@ function OnReceiveData(string Data)
         NewSpecialMove = int(Parts[9]);
         bNewCamcorder = int(Parts[10]) != 0;
         NewCamcorderState = int(Parts[11]);
+        bRemoteRunning = (Parts.Length >= 13) ? (int(Parts[12]) != 0) : false;
 
         LastReceivedLoc = NewLoc;
         LastReceivedVel = NewVel;

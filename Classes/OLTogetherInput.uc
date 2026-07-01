@@ -4,8 +4,45 @@ var bool bIgnoreNextChar;
 
 function bool Key(int ControllerId, name Key, EInputEvent Event, float AmountDepressed=1.0, bool bGamepad=false)
 {
+    local OLTogetherHUD H;
+
     if (Outer == None)
         return false;
+
+    H = OLTogetherHUD(Outer.myHUD);
+    if (H == None)
+        H = OLTogetherHUD(Outer.HUD);
+
+    if (Event == IE_Pressed || Event == IE_Repeat)
+    {
+        if (Outer.bChatMode)
+        {
+            if (Key == 'MouseScrollUp')
+            {
+                if (H != None)
+                    H.ScrollChat(3);
+                return true;
+            }
+            if (Key == 'MouseScrollDown')
+            {
+                if (H != None)
+                    H.ScrollChat(-3);
+                return true;
+            }
+            if (Key == 'PageUp')
+            {
+                if (H != None)
+                    H.ScrollChat(6);
+                return true;
+            }
+            if (Key == 'PageDown')
+            {
+                if (H != None)
+                    H.ScrollChat(-6);
+                return true;
+            }
+        }
+    }
 
     if (Outer.bChatMode)
     {
@@ -45,6 +82,8 @@ function bool Key(int ControllerId, name Key, EInputEvent Event, float AmountDep
     {
         Outer.bChatMode = true;
         Outer.ChatInput = "";
+        if (H != None)
+            H.ResetChatVisibility();
         bIgnoreNextChar = true;
         return true;
     }
