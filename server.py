@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 import asyncio
 import json
 import logging
@@ -664,6 +666,10 @@ class ServerApp(tk.Tk):
             self.server.kick_client(name)
 
     def launch_game(self, role: int):
+        if not sys.platform.startswith("win"):
+            messagebox.showwarning("Game Launch not supported yet", "Platforms other than windows cannot launch the game automatically yet.")
+            return
+
         game_path = self.game_path_var.get().strip()
         if not game_path or not os.path.isfile(game_path):
             messagebox.showwarning("Missing Game Path", "Please choose a valid game executable path.")
