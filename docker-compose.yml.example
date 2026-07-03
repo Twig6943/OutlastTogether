@@ -1,0 +1,12 @@
+services:
+  oltogether:
+    build: 
+      context: .
+      dockerfile: dockerfile
+    container_name: oltogether-server
+    restart: unless-stopped
+    volumes:
+      - ./server_config.json:/app/server_config.json:ro # comment this and the above line out of you do not configure a server_config.json file. 
+    ports:
+      - "7777:7777"
+    command: ["python3", "server.py", "--headless"]

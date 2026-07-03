@@ -1,0 +1,7 @@
+{
+  "game_path": "<replace with the path to the binary of literally any officially purchased copy of Outlast 1>",
+  "player_name": "Meina2",
+  "host": "127.0.0.1",
+  "port": "7777",
+  "server_name": "Meina's Server"
+}
