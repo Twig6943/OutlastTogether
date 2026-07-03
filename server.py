@@ -747,21 +747,61 @@ class ServerApp(tk.Tk):
         self.after(200, self.destroy)
 
 
+class HeadlessApp:
+    """Non-GUI stand-in for ServerApp. Implements the callback surface
+    BridgeServer expects (log / set_server_state / refresh_clients) so the
+    relay can run without Tkinter."""
+
+    def __init__(self):
+        self.server = BridgeServer(self)
+        self.server_running = False
+
+    def log(self, message: str):
+        stamp = time.strftime("%H:%M:%S")
+        print(f"[{stamp}] {message}")
+
+    def set_server_state(self, running: bool):
+        self.server_running = running
+
+    def refresh_clients(self, snapshot: list):
+        if not snapshot:
+            return
+        roster = ", ".join(f"{c['name']}@{c['address']}" for c in snapshot)
+        print(f"Clients ({len(snapshot)}): {roster}")
+
+    def run(self, host: str, port: int):
+        self.server.start(host, port)
+        try:
+            while self.server.thread and self.server.thread.is_alive():
+                self.server.thread.join(timeout=1)
+        except KeyboardInterrupt:
+            print("\nShutting down...")
+            self.server.stop()
+            if self.server.thread:
+                self.server.thread.join(timeout=5)
+
+
 def main():
     logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(message)s", datefmt="%H:%M:%S")
 
+    headless = "--headless" in sys.argv
+    args = [a for a in sys.argv[1:] if a != "--headless"]
+
     host = _detect_local_host()
     port = 7777
-    if len(sys.argv) >= 2:
-        host = sys.argv[1]
-    if len(sys.argv) >= 3:
+    if len(args) >= 1:
+        host = args[0]
+    if len(args) >= 2:
         try:
-            port = int(sys.argv[2])
+            port = int(args[1])
         except ValueError:
             pass
 
-    app = ServerApp(host, port)
-    app.mainloop()
+    if headless:
+        HeadlessApp().run(host, port)
+    else:
+        app = ServerApp(host, port)
+        app.mainloop()
 
 
 if __name__ == "__main__":
