@@ -1,3 +1,4 @@
+//You need to install those dependencies if you want to use the script.
 asyncio
 sounddevice
 nump
