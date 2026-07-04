@@ -7,7 +7,7 @@ W/ Superboo07.
 Features:
 - In-game Multiplayer Settings Menu (Press "~" key to open)
 - Chat Box
-- Proximity Voice Chat
+- Proximity Voice Chat (Very WIP)
 - Better GUI
 - Better Room Creaton/Joining
 - Stability.
