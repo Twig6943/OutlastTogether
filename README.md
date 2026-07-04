@@ -3,6 +3,7 @@ W/ Superboo07.
 <img width="1177" height="899" alt="image" src="https://github.com/user-attachments/assets/352fd538-4b4c-46f6-bb8f-41c302b6c478" />
 
 Features:
+- In-game Multiplayer Settings Menu (Press "~" key to open)
 - Chat Box
 - Proximity Voice Chat
 - Better GUI
