@@ -15,7 +15,7 @@ How to use:
 - Drag all the files into the Outlast root folder.
 - Run OutlastTogetherLauncher.
 - Set your game path to the main Outlast Root Folder.
-- Configure your room and press "HOST ROOM" and Launch Game.
+- Configure your room and press "START HOST" and Launch Game.
 
 For Join:
 - Refresh until you see a room you want to join, select it and press Join.
