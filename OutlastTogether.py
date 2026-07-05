@@ -23,26 +23,28 @@ from tkinter import filedialog, messagebox, ttk
 
 LOG = logging.getLogger("oltogether")
 
-def _get_audio_devices():
+
+def _resource_path(name):
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, name)
+
+
+def _set_app_icon(root):
+    icon_png = _resource_path("app_icon.png")
+    icon_ico = _resource_path("app_icon.ico")
     try:
-        import sounddevice
-        devices = ["Default"]
-        default_dev = sounddevice.default.device[0] if sounddevice.default.device else None
-        for idx, dev in enumerate(sounddevice.query_devices()):
-            if dev.get("max_input_channels", 0) <= 0:
-                continue
-            try:
-                with sounddevice.InputStream(device=idx, channels=1, samplerate=8000, blocksize=1024):
-                    pass
-            except Exception:
-                continue
-            name = dev.get("name", f"Device {idx}")
-            if idx == default_dev:
-                name = f"{name} [Default]"
-            devices.append(name)
-        return devices if len(devices) > 1 else ["Default"]
+        if os.path.exists(icon_ico):
+            root.iconbitmap(default=icon_ico)
     except Exception:
-        return ["Default"]
+        pass
+    try:
+        img = tk.PhotoImage(file=icon_png)
+        root.iconphoto(True, img)
+        root._app_icon_ref = img
+    except Exception:
+        pass
+
+
 
 
 def _resolve_device_index(name):
@@ -59,6 +61,28 @@ def _resolve_device_index(name):
     except Exception:
         pass
     return None
+
+
+def _get_audio_devices():
+    devices = ["Default"]
+    try:
+        import sounddevice
+        default_in = -1
+        try:
+            default_in = sounddevice.default.device[0]
+        except Exception:
+            pass
+        for idx, dev in enumerate(sounddevice.query_devices()):
+            if dev.get("max_input_channels", 0) > 0:
+                name = dev.get("name", "Unknown Device").strip()
+                if idx == default_in:
+                    devices.append(f"{name} [Default]")
+                else:
+                    devices.append(name)
+    except Exception:
+        pass
+    seen = set()
+    return [d for d in devices if not (d in seen or seen.add(d))]
 
 
 class MicMeter:
@@ -390,6 +414,8 @@ class VoiceClient:
         # driven entirely by PTT, lines from the game: true when push-to-talk
         # is disabled (always-on) or the bind is currently held.
         self.ptt: bool = False
+        self.prox_near: float = 800.0
+        self.prox_far: float = 2500.0
 
     def start(self, host: str, port: int):
         if self.running:
@@ -469,6 +495,9 @@ class VoiceClient:
                 self.y = float(parts[2])
             elif parts[0] == "PTT" and len(parts) >= 2:
                 self.ptt = parts[1] == "1"
+            elif parts[0] == "PROX" and len(parts) >= 3:
+                self.prox_near = float(parts[1])
+                self.prox_far = float(parts[2])
         except Exception:
             pass
 
@@ -571,7 +600,12 @@ class VoiceClient:
             audio = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
             # Apply distance attenuation
             dist = ((x - self.x) ** 2 + (y - self.y) ** 2) ** 0.5
-            gain = max(0.0, 1.0 - dist / 5000.0)
+            if dist < self.prox_near:
+                gain = 1.0
+            elif dist >= self.prox_far:
+                gain = 0.0
+            else:
+                gain = 1.0 - (dist - self.prox_near) / max(1.0, self.prox_far - self.prox_near)
             if gain <= 0.01:
                 return
             audio *= gain * self.voice_settings.output_volume
@@ -1268,6 +1302,7 @@ class OLTogetherApp(tk.Tk):
         self.overrideredirect(True)
         self.minsize(1140, 780)
         self.configure(bg=self.BG)
+        _set_app_icon(self)
         self._drag_data = {"x": 0, "y": 0}
         self._pulse_phase = 0.0
         self._glow_widgets = []
@@ -1810,16 +1845,24 @@ class OLTogetherApp(tk.Tk):
         port = self.port_var.get().strip() or str(RELAY_PORT)
         room = self._room_config()
         self._save_settings()
-        url = f"Intro_Persistent?game=Multiplayer.OLTogetherGame?Role={role}?ServerIP={quote(host, safe='')}?ServerPort={port}?PlayerName={quote(player_name, safe='')}?VoiceHost={quote(host, safe='')}?VoicePort=7778?QuickPlay"
+        try:
+            import socket
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(('127.0.0.1', 0))
+                control_port = s.getsockname()[1]
+        except Exception:
+            control_port = GAME_CONTROL_PORT
+
+        url = f"Intro_Persistent?game=Multiplayer.OLTogetherGame?Role={role}?ServerIP={quote(host, safe='')}?ServerPort={port}?PlayerName={quote(player_name, safe='')}?VoiceHost={quote(host, safe='')}?VoicePort=7778?ControlPort={control_port}?QuickPlay"
         if room.password:
             url += f"?RoomToken={quote(_sha256(room.password), safe='')}"
         if room.speedrun_mode:
             url += "?SpeedrunMode=1"
         try:
-            subprocess.Popen([game_path, url, "-log"])
+            subprocess.Popen([game_path, url, "-log", "-windowed", "-ResX=800", "-ResY=600"])
         except Exception:
             pass
-        self._start_voice_client(host)
+        self._start_voice_client(host, control_port)
 
     def _current_voice_settings(self) -> VoiceSettings:
         return VoiceSettings(
@@ -1832,7 +1875,7 @@ class OLTogetherApp(tk.Tk):
         if self._voice_client is not None:
             self._voice_client.voice_settings = self._current_voice_settings()
 
-    def _start_voice_client(self, voice_host):
+    def _start_voice_client(self, voice_host, control_port):
         if self._mic_monitor is not None:
             try:
                 self._mic_monitor.stop()
@@ -1847,7 +1890,7 @@ class OLTogetherApp(tk.Tk):
         mic = self.mic_var.get().strip() or "Default"
         try:
             self._voice_client = VoiceClient(mic_device=mic, control_host="127.0.0.1",
-                                              control_port=GAME_CONTROL_PORT,
+                                              control_port=control_port,
                                               voice_settings=self._current_voice_settings())
             self._voice_client.start(voice_host, VOICE_PORT)
         except Exception as exc:

@@ -19,10 +19,10 @@ simulated event PostBeginPlay()
     ReceiveMode = RMODE_Event;
 }
 
-function Init(OLTogetherController Controller)
+function Init(OLTogetherController Controller, int Port)
 {
     ControllerOwner = Controller;
-    ListenPort      = 6700;
+    ListenPort      = Port;
 
     LinkMode    = MODE_Text;
     ReceiveMode = RMODE_Event;
@@ -38,25 +38,30 @@ function Init(OLTogetherController Controller)
     }
 }
 
-event GainedChild(Actor C)
+event Accepted()
 {
-    local OLTogetherVoiceListener Child;
-    Child = OLTogetherVoiceListener(C);
-    if (Child != None)
+    local OLTogetherVoiceListener Parent;
+    
+    // This event is called on the spawned child connection.
+    Parent = OLTogetherVoiceListener(Owner);
+    if (Parent != None)
     {
-        Child.ControllerOwner = ControllerOwner;
-        ActiveChild = Child;
-        bClientConnected = true;
+        Parent.ActiveChild = self;
+        Parent.bClientConnected = true;
         `log("OLTogetherVoiceListener: Voice client connected.");
     }
 }
 
-event LostChild(Actor C)
+event Closed()
 {
-    if (OLTogetherVoiceListener(C) == ActiveChild)
+    local OLTogetherVoiceListener Parent;
+    
+    // Called when the connection drops.
+    Parent = OLTogetherVoiceListener(Owner);
+    if (Parent != None && Parent.ActiveChild == self)
     {
-        ActiveChild = None;
-        bClientConnected = false;
+        Parent.ActiveChild = None;
+        Parent.bClientConnected = false;
         `log("OLTogetherVoiceListener: Voice client disconnected.");
     }
 }

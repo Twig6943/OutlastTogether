@@ -50,6 +50,296 @@ const NUM_CHAT_ANIMS = 8;
 // Chat animations states
 var int ChatAnimVariant;
 
+// --- Emoji picker ---
+var OLTogetherEmoji EmojiData;
+var array<string> EmojiCacheCodes;
+var array<Texture2D> EmojiCacheTex;
+
+var bool  bEmojiPickerOpen;
+var float EmojiPickerAnim;      // 0 = closed, 1 = fully open
+var float EmojiPickerTarget;    // where EmojiPickerAnim is heading
+var int   EmojiPickerVariant;   // entrance/exit style
+var int   EmojiCategory;        // active category tab
+var float EmojiScroll;          // scroll offset in rows
+
+// Hit-test results computed during draw, consumed by click handler
+var bool  bHoverEmojiButton;
+var int   HoveredEmojiTab;
+var int   HoveredEmojiIndex;    // absolute index into EmojiData.Codes, -1 = none
+
+// Emoji button rectangle (for the cursor hit-test), refreshed each chat draw
+var float EmojiBtnX, EmojiBtnY, EmojiBtnS;
+
+const EMOJI_CACHE_MAX = 320;
+const NUM_EMOJI_ANIMS = 6;
+
+var Font CachedRobotoFont;
+
+function Font GetRobotoFont()
+{
+    if (CachedRobotoFont == None)
+    {
+        CachedRobotoFont = Font(DynamicLoadObject("multiplayerassets.Fonts.RobotoSemiBold", class'Font', true));
+        if (CachedRobotoFont == None)
+            CachedRobotoFont = class'Engine'.Static.GetLargeFont();
+    }
+    return CachedRobotoFont;
+}
+
+event PostBeginPlay()
+{
+    super.PostBeginPlay();
+    GetRobotoFont(); // Preload the font instantly on boot
+}
+
+function EnsureEmojiData()
+{
+    if (EmojiData == None)
+        EmojiData = new(self) class'OLTogetherEmoji';
+}
+
+// On-demand texture loader with a small LRU-ish cache so the picker grid and
+// inline chat emoji don't re-resolve the same package objects every frame.
+function Texture2D GetEmojiTex(string Code)
+{
+    local int I;
+    local Texture2D T;
+
+    for (I = 0; I < EmojiCacheCodes.Length; I++)
+        if (EmojiCacheCodes[I] == Code)
+            return EmojiCacheTex[I];
+
+    T = Texture2D(DynamicLoadObject("multiplayerassets.Emojis." $ Code, class'Texture2D', true));
+
+    if (EmojiCacheCodes.Length >= EMOJI_CACHE_MAX)
+    {
+        EmojiCacheCodes.Remove(0, 1);
+        EmojiCacheTex.Remove(0, 1);
+    }
+    EmojiCacheCodes.AddItem(Code);
+    EmojiCacheTex.AddItem(T);
+    return T;
+}
+
+function DrawEmojiTile(Texture2D T, float X, float Y, float S, float Alpha)
+{
+    local LinearColor LC;
+    if (T == None)
+        return;
+    LC.R = 1.0;
+    LC.G = 1.0;
+    LC.B = 1.0;
+    LC.A = Alpha;
+    Canvas.SetPos(X, Y);
+    Canvas.DrawTile(T, S, S, 0.0, 0.0, 64.0, 64.0, LC);
+}
+
+// Measures a chat string treating each {e:CODE} token as a square emoji of
+// width EmojiSize and everything else as normal text.
+function float MeasureRichW(string Text, float FontScale, float EmojiSize)
+{
+    local int I, N, CloseAt;
+    local float W;
+    local string Rest;
+
+    I = 0;
+    N = Len(Text);
+    W = 0.0;
+    while (I < N)
+    {
+        if (Mid(Text, I, 3) == "{e:")
+        {
+            Rest = Mid(Text, I);
+            CloseAt = InStr(Rest, "}");
+            if (CloseAt != -1)
+            {
+                W += EmojiSize;
+                I += CloseAt + 1;
+                continue;
+            }
+        }
+        W += MeasureW(Mid(Text, I, 1), FontScale);
+        I += 1;
+    }
+    return W;
+}
+
+// Draws a chat string, rendering {e:CODE} tokens as inline emoji tiles and the
+// rest as normal text. Returns nothing; used by the chat log and input line.
+function DrawRichLine(string Text, float X, float Y, float FontScale, float EmojiSize, byte R, byte G, byte B, byte A)
+{
+    local int I, N, CloseAt;
+    local float CurX, EmojiY, TextH;
+    local string Rest, Code, Buffer;
+
+    I = 0;
+    N = Len(Text);
+    CurX = X;
+    Buffer = "";
+    TextH = MeasureH("Ag", FontScale);
+    EmojiY = Y + (TextH - EmojiSize) * 0.5;
+    if (EmojiY < Y - EmojiSize)
+        EmojiY = Y;
+
+    while (I < N)
+    {
+        if (Mid(Text, I, 3) == "{e:")
+        {
+            Rest = Mid(Text, I);
+            CloseAt = InStr(Rest, "}");
+            if (CloseAt != -1)
+            {
+                if (Buffer != "")
+                {
+                    DrawLabel(Buffer, CurX, Y, FontScale, R, G, B, A);
+                    CurX += MeasureW(Buffer, FontScale);
+                    Buffer = "";
+                }
+                Code = Mid(Rest, 3, CloseAt - 3);
+                DrawEmojiTile(GetEmojiTex(Code), CurX, EmojiY, EmojiSize, float(A) / 255.0);
+                CurX += EmojiSize;
+                I += CloseAt + 1;
+                continue;
+            }
+        }
+        Buffer = Buffer $ Mid(Text, I, 1);
+        I += 1;
+    }
+    if (Buffer != "")
+        DrawLabel(Buffer, CurX, Y, FontScale, R, G, B, A);
+}
+
+// Word-wraps a chat string that may contain {e:CODE} tokens, appending the
+// wrapped rich-text lines onto OutLines. Emoji tokens are atomic units.
+function WrapRichLine(string Text, float MaxWidth, float FontScale, float EmojiSize, out array<string> OutLines)
+{
+    local array<string> Atoms;
+    local string Cur, Rest, Tok, Ch, Word, Chunk;
+    local int I, N, CloseAt, K;
+
+    if (Text == "")
+    {
+        OutLines.AddItem("");
+        return;
+    }
+
+    // Tokenize into atoms: emoji tokens, single spaces, and word runs.
+    I = 0;
+    N = Len(Text);
+    Word = "";
+    while (I < N)
+    {
+        if (Mid(Text, I, 3) == "{e:")
+        {
+            Rest = Mid(Text, I);
+            CloseAt = InStr(Rest, "}");
+            if (CloseAt != -1)
+            {
+                if (Word != "")
+                {
+                    Atoms.AddItem(Word);
+                    Word = "";
+                }
+                Tok = Left(Rest, CloseAt + 1);
+                Atoms.AddItem(Tok);
+                I += CloseAt + 1;
+                continue;
+            }
+        }
+        Ch = Mid(Text, I, 1);
+        if (Ch == " ")
+        {
+            if (Word != "")
+            {
+                Atoms.AddItem(Word);
+                Word = "";
+            }
+            Atoms.AddItem(" ");
+        }
+        else
+        {
+            Word = Word $ Ch;
+        }
+        I += 1;
+    }
+    if (Word != "")
+        Atoms.AddItem(Word);
+
+    // Greedy line fill by measured rich width.
+    Cur = "";
+    for (I = 0; I < Atoms.Length; I++)
+    {
+        if (MeasureRichW(Cur $ Atoms[I], FontScale, EmojiSize) > MaxWidth && Cur != "")
+        {
+            OutLines.AddItem(Cur);
+            Cur = "";
+            if (Atoms[I] == " ")
+                continue;
+        }
+
+        // A single text word wider than the line gets broken by characters.
+        if (Atoms[I] != " " && Left(Atoms[I], 3) != "{e:"
+            && MeasureRichW(Atoms[I], FontScale, EmojiSize) > MaxWidth)
+        {
+            Chunk = "";
+            for (K = 0; K < Len(Atoms[I]); K++)
+            {
+                if (MeasureRichW(Cur $ Chunk $ Mid(Atoms[I], K, 1), FontScale, EmojiSize) > MaxWidth
+                    && (Cur $ Chunk) != "")
+                {
+                    OutLines.AddItem(Cur $ Chunk);
+                    Cur = "";
+                    Chunk = "";
+                }
+                Chunk = Chunk $ Mid(Atoms[I], K, 1);
+            }
+            Cur = Cur $ Chunk;
+            continue;
+        }
+
+        Cur = Cur $ Atoms[I];
+    }
+    if (Cur != "")
+        OutLines.AddItem(Cur);
+}
+
+// Renders a rich line clamped to MaxWidth by dropping leading content so the
+// tail (where the caret is) stays visible. Used for the chat input preview.
+function DrawRichLineTail(string Text, float X, float Y, float MaxWidth, float FontScale, float EmojiSize, byte R, byte G, byte B, byte A)
+{
+    local string Visible, Rest;
+    local int CloseAt, StartI, N;
+
+    // Fast path: whole thing fits.
+    if (MeasureRichW(Text, FontScale, EmojiSize) <= MaxWidth)
+    {
+        DrawRichLine(Text, X, Y, FontScale, EmojiSize, R, G, B, A);
+        return;
+    }
+
+    // Drop atoms from the front until the remainder fits.
+    StartI = 0;
+    N = Len(Text);
+    while (StartI < N)
+    {
+        Visible = Mid(Text, StartI);
+        if (MeasureRichW(Visible, FontScale, EmojiSize) <= MaxWidth)
+            break;
+        if (Mid(Text, StartI, 3) == "{e:")
+        {
+            Rest = Mid(Text, StartI);
+            CloseAt = InStr(Rest, "}");
+            if (CloseAt != -1)
+            {
+                StartI += CloseAt + 1;
+                continue;
+            }
+        }
+        StartI += 1;
+    }
+    DrawRichLine(Mid(Text, StartI), X, Y, FontScale, EmojiSize, R, G, B, A);
+}
+
 function AddChatLine(string Msg)
 {
     if (Msg == "")
@@ -152,7 +442,8 @@ function DrawPanel(float X, float Y, float W, float H, float GlobalAlpha)
 
 function DrawLabel(string Text, float X, float Y, float FontScale, byte R, byte G, byte B, byte A)
 {
-    Canvas.Font = class'Engine'.Static.GetLargeFont();
+    FontScale *= 0.5;
+    Canvas.Font = GetRobotoFont();
     Canvas.SetDrawColor(0, 0, 0, Min(A, 200));
     Canvas.SetPos(X + FMax(1.0, UIScale), Y + FMax(1.0, UIScale));
     Canvas.DrawText(Text, false, FontScale, FontScale);
@@ -165,6 +456,7 @@ function DrawLabel(string Text, float X, float Y, float FontScale, byte R, byte 
 function float MeasureW(string Text, float FontScale)
 {
     local float W, H;
+    FontScale *= 0.5;
     Canvas.TextSize(Text, W, H);
     return W * FontScale;
 }
@@ -172,6 +464,7 @@ function float MeasureW(string Text, float FontScale)
 function float MeasureH(string Text, float FontScale)
 {
     local float W, H;
+    FontScale *= 0.5;
     Canvas.TextSize(Text, W, H);
     return H * FontScale;
 }
@@ -436,11 +729,29 @@ function DrawChatPanel(OLTogetherController PC)
     local float Margin;
     local float GA, EaseOpen, SlideY, OffX, OffY, Sc;
     local int I, VisibleLines, Total, StartRowIndex, MaxOffset, Drawn, LinesToDraw;
-    local string InputText, ScrollHint;
+    local int TabI, CatStart, CatCount, RowI, ColI, PerRow, RowCount, BaseIdx, EndIdx;
+    local float PickerX, PickerY, PickerW, PickerH, PickerPad, PickerHeaderH, PickerGridY, PickerGridH, PickerCell, PickerGap;
+    local float PickerBodyX, PickerBodyY, PickerBodyW, PickerBodyH, PickerScrollH, PickerTabH, PickerBodyAlpha, PickScale, PickSlide;
+    local float BtnSize, BtnX, BtnY, BtnAlpha, GridX, GridY, GridW, GridH, CellX, CellY, CellS, EmojiAlpha;
+    local string InputText, ScrollHint, TabText;
+    local Texture2D EmojiTex;
+    local OLTogetherEmoji Ed;
+    local bool bEmojiPickerVisible;
+    local OLTogetherInput Input;
 
     GA = ChatVisibilityAlpha;
     if (GA <= 0.01)
         return;
+
+    if (PC.bChatMode)
+    {
+        Input = OLTogetherInput(PC.PlayerInput);
+        if (Input != None)
+        {
+            MouseX = Input.MousePosition.X;
+            MouseY = Input.MousePosition.Y;
+        }
+    }
 
     Margin = 16.0 * UIScale;
     Pad = 8.0 * UIScale;
@@ -515,7 +826,7 @@ function DrawChatPanel(OLTogetherController PC)
     Drawn = 0;
     for (I = StartRowIndex; I < Total && Drawn < LinesToDraw; I++)
     {
-        DrawLabel(Display[I], CX, CY, FontSmall, 220, 222, 228, byte(255.0 * GA));
+        DrawRichLine(Display[I], CX, CY, FontSmall, LineH, 220, 222, 228, byte(255.0 * GA));
         CY += LineH;
         Drawn++;
     }
@@ -526,21 +837,277 @@ function DrawChatPanel(OLTogetherController PC)
     DrawFilledBox(CX, CY + Pad * 0.2, ContentW, FMax(1.0, UIScale), 55, 57, 63, byte(160.0 * GA));
     CY += Pad * 0.5;
 
+    // The emoji button sits at the far right of the input strip. Reserve room
+    // for it so text never runs under it.
+    BtnSize = LineH;
+    BtnAlpha = GA * EaseOpen;
+
     if (PC.bChatMode)
     {
-        InputText = "> " $ PC.ChatText;
-        InputText = TrimTextToWidth(InputText, ContentW, FontBody);
-        InputText = InputText $ (int(WorldInfo.TimeSeconds * 2.0) % 2 == 0 ? "_" : "");
         DrawFilledBox(CX - 4.0 * UIScale, CY - 2.0 * UIScale, ContentW + 8.0 * UIScale, LineH + 4.0 * UIScale, 26, 28, 34, byte(210.0 * GA));
-        DrawLabel(InputText, CX, CY, FontBody, 225, 227, 235, byte(255.0 * GA));
+
+        InputText = "> " $ PC.ChatText;
+        DrawRichLineTail(InputText $ (int(WorldInfo.TimeSeconds * 2.0) % 2 == 0 ? "_" : ""),
+            CX, CY, ContentW - BtnSize - 6.0 * UIScale, FontBody, LineH,
+            225, 227, 235, byte(255.0 * GA));
+
+        // Emoji button (uses the blank emoji texture as its face).
+        EnsureEmojiData();
+        BtnY = CY - 2.0 * UIScale;                 // same top as input box
+        BtnSize = LineH + 4.0 * UIScale;            // same height as input box
+        BtnX = PanelX + PanelW - Pad - BtnSize;
+        EmojiBtnX = BtnX;
+        EmojiBtnY = BtnY;
+        EmojiBtnS = BtnSize;
+
+        bHoverEmojiButton = (MouseX >= BtnX && MouseX < BtnX + BtnSize
+            && MouseY >= BtnY && MouseY < BtnY + BtnSize);
+
+        DrawFilledBox(BtnX, BtnY, BtnSize, BtnSize,
+            bHoverEmojiButton ? 60 : 40, bHoverEmojiButton ? 64 : 42, bHoverEmojiButton ? 74 : 50, byte(230.0 * GA));
+        EmojiTex = GetEmojiTex(bEmojiPickerOpen ? "1f642" : "EmojiBlank");
+        if (EmojiTex != None)
+            DrawEmojiTile(EmojiTex, BtnX + (BtnSize - LineH) * 0.5, BtnY + (BtnSize - LineH) * 0.5, LineH, GA);
+        else
+            DrawLabel(":)", BtnX, CY, FontBody, 220, 222, 230, byte(255.0 * GA));
     }
     else
     {
+        EmojiBtnS = 0.0;
         ScrollHint = "Press T to chat";
         if (Total > VisibleLines)
             ScrollHint = ScrollHint $ "   -   Scroll to view history";
         DrawLabel(ScrollHint, CX, CY, FontSmall, 120, 122, 130, byte(200.0 * GA));
     }
+
+    // --- Emoji picker (Discord-style category grid), drawn above the input ---
+    bEmojiPickerVisible = (EmojiPickerAnim > 0.01);
+    HoveredEmojiTab = -1;
+    HoveredEmojiIndex = -1;
+
+    if (PC.bChatMode && bEmojiPickerVisible)
+    {
+        EnsureEmojiData();
+        Ed = EmojiData;
+        if (Ed == None)
+            return;
+
+        PickScale = EmojiPickerAnim * EmojiPickerAnim * (3.0 - 2.0 * EmojiPickerAnim);
+        PickerBodyAlpha = GA * PickScale;
+
+        PickerPad = 6.0 * UIScale;
+        PickerCell = 26.0 * UIScale;
+        PickerGap = 3.0 * UIScale;
+        PickerTabH = 18.0 * UIScale;
+
+        PickerW = PanelW;
+        PerRow = int((PickerW - PickerPad * 2.0) / (PickerCell + PickerGap));
+        if (PerRow < 4)
+            PerRow = 4;
+
+        PickerGridH = (PickerCell + PickerGap) * 6.0;
+        PickerHeaderH = PickerTabH + PickerPad;
+        PickerH = PickerHeaderH + PickerGridH + PickerPad * 2.0;
+
+        // Entrance animation: rise from the input box and fade in.
+        PickSlide = (1.0 - PickScale) * 30.0 * UIScale;
+        PickerX = PanelX;
+        PickerY = PanelY - PickerH - 6.0 * UIScale + PickSlide;
+        if (PickerY < Margin)
+            PickerY = Margin;
+
+        DrawPanel(PickerX, PickerY, PickerW, PickerH, PickerBodyAlpha);
+
+        // Category tabs across the top.
+        DrawEmojiTabs(Ed, PickerX + PickerPad, PickerY + PickerPad,
+            PickerW - PickerPad * 2.0, PickerTabH, PickerBodyAlpha);
+
+        // Grid body.
+        GridX = PickerX + PickerPad;
+        GridY = PickerY + PickerHeaderH + PickerPad;
+        GridW = PickerW - PickerPad * 2.0;
+        GridH = PickerGridH;
+
+        if (EmojiCategory < 0)
+            EmojiCategory = 0;
+        if (EmojiCategory >= Ed.CatNames.Length)
+            EmojiCategory = Ed.CatNames.Length - 1;
+
+        CatStart = Ed.CatStarts[EmojiCategory];
+        CatCount = Ed.CatCounts[EmojiCategory];
+        RowCount = (CatCount + PerRow - 1) / PerRow;
+
+        // Clamp scroll to content.
+        if (EmojiScroll < 0.0)
+            EmojiScroll = 0.0;
+        if (EmojiScroll > float(RowCount) - 6.0)
+            EmojiScroll = FMax(0.0, float(RowCount) - 6.0);
+
+        CellS = PickerCell;
+        BaseIdx = int(EmojiScroll) * PerRow;
+        EndIdx = BaseIdx + PerRow * 7;
+        if (EndIdx > CatCount)
+            EndIdx = CatCount;
+
+        for (I = BaseIdx; I < EndIdx; I++)
+        {
+            RowI = (I / PerRow) - int(EmojiScroll);
+            ColI = I % PerRow;
+            CellX = GridX + ColI * (CellS + PickerGap);
+            CellY = GridY + RowI * (CellS + PickerGap);
+            if (CellY + CellS <= GridY || CellY >= GridY + GridH)
+                continue;
+
+            EmojiAlpha = PickerBodyAlpha;
+            if (MouseX >= CellX && MouseX < CellX + CellS && MouseY >= CellY && MouseY < CellY + CellS
+                && CellY >= GridY - CellS * 0.5 && CellY <= GridY + GridH)
+            {
+                HoveredEmojiIndex = CatStart + I;
+                DrawFilledBox(CellX - 1.0 * UIScale, CellY - 1.0 * UIScale, CellS + 2.0 * UIScale, CellS + 2.0 * UIScale,
+                    70, 120, 90, byte(160.0 * PickerBodyAlpha));
+            }
+
+            EmojiTex = GetEmojiTex(Ed.Codes[CatStart + I]);
+            if (EmojiTex != None)
+                DrawEmojiTile(EmojiTex, CellX, CellY, CellS, EmojiAlpha);
+        }
+
+        // Scrollbar for the grid.
+        if (RowCount > 6)
+            DrawScrollbar(PickerX + PickerW - 5.0 * UIScale, GridY, GridH, RowCount, 6, int(EmojiScroll), PickerBodyAlpha);
+
+        // Draw the cursor on top of the picker while chatting with it open.
+        DrawCursor(PickerBodyAlpha);
+    }
+    else if (PC.bChatMode)
+    {
+        DrawCursor(GA);
+    }
+}
+
+// Draws the category tab strip and records the hovered tab for click handling.
+function DrawEmojiTabs(OLTogetherEmoji Ed, float X, float Y, float W, float H, float Alpha)
+{
+    local int I, N;
+    local float TabW, TX;
+    local string Lbl;
+    local byte BA;
+
+    N = Ed.CatNames.Length;
+    if (N <= 0)
+        return;
+
+    TabW = W / float(N);
+    BA = byte(255.0 * Alpha);
+
+    for (I = 0; I < N; I++)
+    {
+        TX = X + I * TabW;
+
+        if (MouseX >= TX && MouseX < TX + TabW && MouseY >= Y && MouseY < Y + H)
+        {
+            HoveredEmojiTab = I;
+            DrawFilledBox(TX, Y, TabW - 2.0 * UIScale, H, 70, 120, 90, byte(150.0 * Alpha));
+        }
+        else if (I == EmojiCategory)
+        {
+            DrawFilledBox(TX, Y, TabW - 2.0 * UIScale, H, 70, 90, 120, byte(150.0 * Alpha));
+        }
+        else
+        {
+            DrawFilledBox(TX, Y, TabW - 2.0 * UIScale, H, 30, 32, 38, byte(120.0 * Alpha));
+        }
+
+        Lbl = TrimTextToWidth(Ed.CatNames[I], TabW - 4.0 * UIScale, 0.55 * UIScale);
+        DrawLabel(Lbl, TX + 3.0 * UIScale, Y + 2.0 * UIScale, 0.55 * UIScale, 220, 222, 230, BA);
+    }
+}
+
+// Updates the picker open/close animation toward its target.
+function UpdateEmojiPickerAnimation(float Delta)
+{
+    local float Rate;
+    Rate = 14.0;
+    EmojiPickerTarget = bEmojiPickerOpen ? 1.0 : 0.0;
+    EmojiPickerAnim += (EmojiPickerTarget - EmojiPickerAnim) * FMin(1.0, Delta * Rate);
+    EmojiPickerAnim = FClamp(EmojiPickerAnim, 0.0, 1.0);
+}
+
+function ToggleEmojiPicker()
+{
+    bEmojiPickerOpen = !bEmojiPickerOpen;
+    if (bEmojiPickerOpen)
+    {
+        EnsureEmojiData();
+        EmojiPickerVariant = Rand(NUM_EMOJI_ANIMS);
+    }
+    NoteChatActivity();
+}
+
+function CloseEmojiPicker()
+{
+    bEmojiPickerOpen = false;
+    EmojiPickerTarget = 0.0;
+}
+
+function ScrollEmojiPicker(int Delta)
+{
+    EmojiScroll += float(Delta);
+    if (EmojiScroll < 0.0)
+        EmojiScroll = 0.0;
+    NoteChatActivity();
+}
+
+// Routes a click while chatting. Returns true if the click was consumed by the
+// emoji button, a category tab, or an emoji cell.
+function bool EmojiPickerClick(OLTogetherController PC)
+{
+    // Emoji button toggles the picker.
+    if (EmojiBtnS > 0.0 && MouseX >= EmojiBtnX - 2.0 * UIScale && MouseX < EmojiBtnX + EmojiBtnS + 2.0 * UIScale
+        && MouseY >= EmojiBtnY - 1.0 * UIScale && MouseY < EmojiBtnY + EmojiBtnS + 2.0 * UIScale)
+    {
+        ToggleEmojiPicker();
+        return true;
+    }
+
+    if (!bEmojiPickerOpen || EmojiPickerAnim <= 0.5)
+        return false;
+
+    if (HoveredEmojiTab >= 0)
+    {
+        EmojiCategory = HoveredEmojiTab;
+        EmojiScroll = 0.0;
+        NoteChatActivity();
+        return true;
+    }
+
+    if (HoveredEmojiIndex >= 0 && EmojiData != None && HoveredEmojiIndex < EmojiData.Codes.Length)
+    {
+        InsertEmojiToken(PC, EmojiData.Codes[HoveredEmojiIndex]);
+        return true;
+    }
+
+    return false;
+}
+
+function InsertEmojiToken(OLTogetherController PC, string Code)
+{
+    local string Token;
+    Token = "{e:" $ Code $ "}";
+    if (Len(PC.ChatText) + Len(Token) > 220)
+        return;
+    PC.ChatText = PC.ChatText $ Token;
+    NoteChatActivity();
+}
+
+// True when the cursor is over the picker or the emoji button, so clicks there
+// are handled by the picker rather than falling through.
+function bool IsMouseOverEmojiUI()
+{
+    if (EmojiBtnS > 0.0 && MouseX >= EmojiBtnX - 2.0 * UIScale && MouseX < EmojiBtnX + EmojiBtnS + 2.0 * UIScale
+        && MouseY >= EmojiBtnY - 1.0 * UIScale && MouseY < EmojiBtnY + EmojiBtnS + 2.0 * UIScale)
+        return true;
+    return bEmojiPickerOpen && (HoveredEmojiTab >= 0 || HoveredEmojiIndex >= 0);
 }
 
 function DrawScrollbar(float X, float Y, float H, int Total, int Visible, int StartRowIndex, float GA)
@@ -1158,7 +1725,7 @@ event PostRender()
         return;
 
     UIScale = FClamp(ViewH() / REF_HEIGHT, 0.75, 2.5);
-    Canvas.Font = class'Engine'.Static.GetLargeFont();
+    Canvas.Font = GetRobotoFont();
 
     Delta = WorldInfo.TimeSeconds - LastChatLineTime;
     if (Delta < 0.0 || Delta > 0.5)
@@ -1167,6 +1734,7 @@ event PostRender()
 
     UpdateChatAnimation(PC, Delta);
     UpdateSettingsOpenAnimation(Delta);
+    UpdateEmojiPickerAnimation(Delta);
 
     if (IsAtMainMenuScreen())
         DrawMainMenuInfo(PC);

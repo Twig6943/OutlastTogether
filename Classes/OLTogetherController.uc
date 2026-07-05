@@ -71,7 +71,8 @@ function string ResolveUrl(string Url, string Key)
 }
 event PostBeginPlay()
 {
-    local string Url, V;
+    local string Url, V, PortStr;
+    local int ControlPort;
     super.PostBeginPlay();
     Url = WorldInfo.GetLocalURL();
     V = ResolveUrl(Url, "Role");
@@ -121,33 +122,29 @@ event PostBeginPlay()
         ConnectionLink.SetServer(ServerAddress, ServerPort);
     }
     LastVoiceControlSendTime = -999.0;
+    PortStr = ResolveUrl(Url, "ControlPort");
+    if (PortStr != "")
+        ControlPort = int(PortStr);
+    else
+        ControlPort = 6700;
+
     VoiceListener = Spawn(class'OLTogetherVoiceListener', self);
     if (VoiceListener != None)
-        VoiceListener.Init(self);
+        VoiceListener.Init(self, ControlPort);
 }
 function HideSpeedrunPawn()
 {
-    local OLHero H;
-    H = OLHero(RemotePawn);
-    if (H != None)
+    if (RemotePawn != None)
     {
-        H.Mesh.SetHidden(true);
-        H.ShadowProxy.SetHidden(true);
-        H.HeadMesh.SetHidden(true);
-        H.CameraMeshShadowProxy.SetHidden(true);
+        RemotePawn.SetHidden(true);
     }
     bHideLocalPawnDuringSpeedrun = true;
 }
 function ShowSpeedrunPawn()
 {
-    local OLHero H;
-    H = OLHero(RemotePawn);
-    if (H != None)
+    if (RemotePawn != None)
     {
-        H.Mesh.SetHidden(false);
-        H.ShadowProxy.SetHidden(false);
-        H.HeadMesh.SetHidden(false);
-        H.CameraMeshShadowProxy.SetHidden(false);
+        RemotePawn.SetHidden(false);
     }
     bHideLocalPawnDuringSpeedrun = false;
 }
@@ -208,6 +205,11 @@ event PlayerTick(float DeltaTime)
     local float GapToRemote;
     local bool bFadeNow;
     super.PlayerTick(DeltaTime);
+    if (bSpeedrunControlsLocked)
+    {
+        if (bIgnoreMoveInput == 0) IgnoreMoveInput(true);
+        if (bIgnoreLookInput == 0) IgnoreLookInput(true);
+    }
     if (ConnectionLink != None && !ConnectionLink.bIsConnected && Settings != None && Settings.bAutoReconnect
         && WorldInfo.TimeSeconds - LastReconnectAttempt > FMax(1.0, Settings.ReconnectDelay))
     {
@@ -275,6 +277,8 @@ event PlayerTick(float DeltaTime)
         LastVoiceControlSendTime = WorldInfo.TimeSeconds;
         VoiceListener.SendControl("POS," $ Pawn.Location.X $ "," $ Pawn.Location.Y);
         VoiceListener.SendControl("PTT," $ int(bMicTransmitting));
+        if (Settings != None)
+            VoiceListener.SendControl("PROX," $ int(Settings.VoiceProximityNear) $ "," $ int(Settings.VoiceProximityFar));
     }
     if (RemotePawn == None && Pawn != None)
     {
@@ -300,13 +304,13 @@ event PlayerTick(float DeltaTime)
                 if (RemoteHero.ShadowProxy != None)
                 {
                     RemoteHero.ShadowProxy.SetOwnerNoSee(false);
-                    RemoteHero.ShadowProxy.SetHidden(false);
+                    RemoteHero.ShadowProxy.SetHidden(bHideLocalPawnDuringSpeedrun);
                     RemoteHero.ShadowProxy.bUpdateSkelWhenNotRendered = true;
                     RemoteHero.ShadowProxy.bTickAnimNodesWhenNotRendered = true;
                 }
                 if (RemoteHero.HeadMesh != None)
                 {
-                    RemoteHero.HeadMesh.SetHidden(false);
+                    RemoteHero.HeadMesh.SetHidden(bHideLocalPawnDuringSpeedrun);
                     RemoteHero.HeadMesh.SetOwnerNoSee(false);
                 }
                 if (RemoteHero.CameraMeshShadowProxy != None)
@@ -350,18 +354,25 @@ event PlayerTick(float DeltaTime)
             else
                 RemoteHero.CurrentLean = 0.0;
         }
-        if (RemoteHero != None && Pawn != None && ConnectionLink != None && ConnectionLink.bFadeNearbyPlayers)
+        if (RemoteHero != None && Pawn != None)
         {
-            GapToRemote = VSize(EasedLoc - Pawn.Location);
-            bFadeNow = (GapToRemote < ConnectionLink.NearbyFadeDistance);
-            if (!bFadeNow && RemoteHero.ShadowProxy != None && RemoteHero.ShadowProxy.HiddenGame)
-                bFadeNow = (GapToRemote < ConnectionLink.NearbyFadeDistance + ConnectionLink.NearbyFadeHysteresis);
-            if (RemoteHero.ShadowProxy != None)
-                RemoteHero.ShadowProxy.SetHidden(bFadeNow);
-            if (RemoteHero.HeadMesh != None)
-                RemoteHero.HeadMesh.SetHidden(bFadeNow);
-            if (bFadeNow && RemoteHero.CameraMeshShadowProxy != None)
-                RemoteHero.CameraMeshShadowProxy.SetHidden(true);
+            if (bHideLocalPawnDuringSpeedrun)
+            {
+                RemotePawn.SetHidden(true);
+            }
+            else if (ConnectionLink != None && ConnectionLink.bFadeNearbyPlayers)
+            {
+                GapToRemote = VSize(EasedLoc - Pawn.Location);
+                bFadeNow = (GapToRemote < ConnectionLink.NearbyFadeDistance);
+                if (!bFadeNow && RemoteHero.ShadowProxy != None && RemoteHero.ShadowProxy.HiddenGame)
+                    bFadeNow = (GapToRemote < ConnectionLink.NearbyFadeDistance + ConnectionLink.NearbyFadeHysteresis);
+                if (RemoteHero.ShadowProxy != None)
+                    RemoteHero.ShadowProxy.SetHidden(bFadeNow);
+                if (RemoteHero.HeadMesh != None)
+                    RemoteHero.HeadMesh.SetHidden(bFadeNow);
+                if (bFadeNow && RemoteHero.CameraMeshShadowProxy != None)
+                    RemoteHero.CameraMeshShadowProxy.SetHidden(true);
+            }
         }
     }
 }
@@ -408,22 +419,7 @@ function ApplySettings()
 }
 Function LoadCheckpoint(string Checkpoint)
 {
-    local OLCheckpoint CheckpointRef;
-    local OLGame GameRef;
-    GameRef = OLGame(WorldInfo.Game);
-    if (GameRef == None) return;
-    foreach AllActors(Class'OLCheckpoint', CheckpointRef)
-    {
-        if (CheckpointRef.CheckpointName == Name(Checkpoint))
-        {
-            if (GameRef.IsPlayingDLC())
-                ConsoleCommand("StreamMap DLC_Checkpoints");
-            else
-                ConsoleCommand("StreamMap Intro_Persistent");
-            StartNewGameAtCheckpoint(Checkpoint, false);
-            return;
-        }
-    }
+    StartNewGameAtCheckpoint(Checkpoint, false);
 }
 function SafeLoadCheckpoint(string Checkpoint)
 {
@@ -862,7 +858,7 @@ function OnReceiveData(string Data)
         {
             ClearTimer('PlayCamcorderIdleAnim');
             ClearTimer('FinishInactiveReload');
-            if (RH.CameraMeshShadowProxy != None)
+            if (RH.CameraMeshShadowProxy != None && !bHideLocalPawnDuringSpeedrun)
                 RH.CameraMeshShadowProxy.SetHidden(false);
             if (RH.ShadowProxyRightArmAnimSlot != None)
                 RH.ShadowProxyRightArmAnimSlot.PlayCustomAnim(bRemotePawnCrouched ? 'player_crouch_camcorder_reload_inactive' : 'player_camcorder_reload_inactive', 1.0, 0.15, 0.05, false, true);

@@ -36,7 +36,15 @@ var config bool bConfigured;
 function SeedDefaults()
 {
     if (bConfigured)
+    {
+        if (VoiceProximityFar == 0.0)
+        {
+            VoiceProximityNear = 800.0;
+            VoiceProximityFar = 2500.0;
+            SaveConfig();
+        }
         return;
+    }
 
     bPauseOnLossFocus  = false;
     bHidePlayerNames   = false;

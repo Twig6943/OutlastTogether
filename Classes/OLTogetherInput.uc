@@ -8,7 +8,7 @@ event PlayerInput(float DeltaTime)
 {
     local OLTogetherHUD H;
     H = OLTogetherHUD(myHUD);
-    if (H != None && H.bSettingsOpen)
+    if (H != None && (H.bSettingsOpen || Outer.bChatMode))
     {
         if (!bMouseCaptured)
         {
@@ -62,25 +62,24 @@ function bool Key(int ControllerId, name Key, EInputEvent Event, float AmountDep
             return true;
         }
 
-    if (Event == IE_Pressed && Key == 'LeftMouseButton')
-    {
-        Outer.SettingsMenuClick();
-        return true;
-    }
-    if (Event == IE_Pressed || Event == IE_Repeat)
-    {
-        switch (Key)
+        if (Event == IE_Pressed && Key == 'LeftMouseButton')
         {
-            case 'Up': case 'W':          Outer.SettingsMenuInput('Up');    return true;
-            case 'Down': case 'S':        Outer.SettingsMenuInput('Down');  return true;
-            case 'Left': case 'A':        Outer.SettingsMenuInput('Left');  return true;
-            case 'Right': case 'D':       Outer.SettingsMenuInput('Right'); return true;
-            case 'Enter': case 'SpaceBar': Outer.SettingsMenuInput('Enter'); return true;
-            case 'Escape': case 'Tilde':  Outer.SettingsMenuInput('Escape'); return true;
+            Outer.SettingsMenuClick();
+            return true;
         }
-    }
-    return true;
-
+        if (Event == IE_Pressed || Event == IE_Repeat)
+        {
+            switch (Key)
+            {
+                case 'Up': case 'W':          Outer.SettingsMenuInput('Up');    return true;
+                case 'Down': case 'S':        Outer.SettingsMenuInput('Down');  return true;
+                case 'Left': case 'A':        Outer.SettingsMenuInput('Left');  return true;
+                case 'Right': case 'D':       Outer.SettingsMenuInput('Right'); return true;
+                case 'Enter': case 'SpaceBar': Outer.SettingsMenuInput('Enter'); return true;
+                case 'Escape': case 'Tilde':  Outer.SettingsMenuInput('Escape'); return true;
+            }
+        }
+        return true;
     }
 
     // Tilde toggles the settings menu (only when not in chat)
@@ -120,31 +119,45 @@ function bool Key(int ControllerId, name Key, EInputEvent Event, float AmountDep
         return true;
     }
 
-    if (Event == IE_Pressed || Event == IE_Repeat)
+    if (Outer.bChatMode)
     {
-        if (Outer.bChatMode)
+        if (Event == IE_Pressed && Key == 'LeftMouseButton')
+        {
+            if (H != None && H.EmojiPickerClick(Outer))
+                return true;
+        }
+
+        if (Event == IE_Pressed || Event == IE_Repeat)
         {
             if (Key == 'MouseScrollUp')
             {
-                if (H != None)
+                if (H != None && H.bEmojiPickerOpen)
+                    H.ScrollEmojiPicker(-1);
+                else if (H != None)
                     H.ScrollChat(3);
                 return true;
             }
             if (Key == 'MouseScrollDown')
             {
-                if (H != None)
+                if (H != None && H.bEmojiPickerOpen)
+                    H.ScrollEmojiPicker(1);
+                else if (H != None)
                     H.ScrollChat(-3);
                 return true;
             }
             if (Key == 'PageUp')
             {
-                if (H != None)
+                if (H != None && H.bEmojiPickerOpen)
+                    H.ScrollEmojiPicker(-6);
+                else if (H != None)
                     H.ScrollChat(6);
                 return true;
             }
             if (Key == 'PageDown')
             {
-                if (H != None)
+                if (H != None && H.bEmojiPickerOpen)
+                    H.ScrollEmojiPicker(6);
+                else if (H != None)
                     H.ScrollChat(-6);
                 return true;
             }
@@ -161,6 +174,8 @@ function bool Key(int ControllerId, name Key, EInputEvent Event, float AmountDep
                     Outer.Chat(Outer.ChatText);
                 Outer.ChatText = "";
                 Outer.bChatMode = false;
+                if (H != None)
+                    H.CloseEmojiPicker();
                 return true;
             }
             if (Key == 'BackSpace')
@@ -173,6 +188,8 @@ function bool Key(int ControllerId, name Key, EInputEvent Event, float AmountDep
             {
                 Outer.ChatText = "";
                 Outer.bChatMode = false;
+                if (H != None)
+                    H.CloseEmojiPicker();
                 return true;
             }
             if (Key == 'Space')
@@ -190,7 +207,12 @@ function bool Key(int ControllerId, name Key, EInputEvent Event, float AmountDep
         Outer.bChatMode = true;
         Outer.ChatText = "";
         if (H != None)
+        {
             H.ResetChatVisibility();
+            MousePosition.X = H.SizeX / 2;
+            MousePosition.Y = H.SizeY / 2;
+        }
+        bMouseCaptured = true;
         bIgnoreNextChar = true;
         return true;
     }
