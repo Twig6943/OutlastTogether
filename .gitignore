@@ -1,2 +1,9 @@
 __pycache__
 server_config.json
+*.exe
+*.cmd
+
+nuitka-crash-report.xml
+
+*.dist/
+*build/

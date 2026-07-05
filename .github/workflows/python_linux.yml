@@ -1,0 +1,30 @@
+name: Build Python (Linux)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+
+      - name: Install dependencies
+        run: |
+          set -x
+          sudo apt-get update
+          sudo apt-get install -y python wine winetricks wine-mono wine-gecko wget libwbclient unzip 7zip
+
+      - name: Build project
+        run: |
+          chmod +x Cross_compile.sh
+          ./Cross_compile.sh
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: OutlastTogether
+          path: |
+            OutlastTogether.exe
