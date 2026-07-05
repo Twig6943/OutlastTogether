@@ -228,6 +228,9 @@ LAN_BROADCAST_INTERVAL = 2.5
 LAN_BROADCAST_COUNT = 3
 PING_REPLY_TIMEOUT = 0.35
 RELAY_PORT = 7777
+MASTER_SERVER_PORT = 47778
+MASTER_SERVER_TIMEOUT = 6.0
+MASTER_SERVER_HEARTBEAT = 30.0
 
 CRITICAL_PREFIXES = (b"CHAT,", b"NAME,", b"NOTIF,", b"PONG,", b"SMOVE,", b"AUTH,")
 
@@ -1039,6 +1042,86 @@ class LANDiscoveryBrowser:
         room["ping"] = _measure_relay_ping(host, port)
 
 
+# ---------------------------------------------------------------------------
+# Master-server client
+# ---------------------------------------------------------------------------
+
+class MasterServerClient:
+    """Connects to a VPS master server to register/list rooms.
+
+    Protocol (line-based, UTF-8):
+      REGISTER,<payload>  - register a room (same CSV as LAN discovery)
+      UNREGISTER          - remove a room registered from this IP:port
+      LIST                - request all rooms; server replies with ROOM,... lines then END
+    """
+
+    def __init__(self, host: str, port: int = MASTER_SERVER_PORT):
+        self.host = host
+        self.port = port
+        self._hb_thread: Optional[threading.Thread] = None
+        self._stop_evt = threading.Event()
+        self._payload: Optional[str] = None  # current hosted room payload
+
+    # ---- public API ----
+
+    def start_heartbeat(self, payload_fn: Callable[[], str]):
+        """Begin periodically re-registering the room."""
+        self._stop_evt.clear()
+        self._payload_fn = payload_fn
+        self._hb_thread = threading.Thread(target=self._hb_loop, daemon=True)
+        self._hb_thread.start()
+
+    def stop_heartbeat(self):
+        """Stop heartbeat and send UNREGISTER."""
+        self._stop_evt.set()
+        try:
+            self._send_line("UNREGISTER")
+        except Exception:
+            pass
+
+    def list_rooms(self) -> list:
+        """Fetch room list from master server. Returns list of room dicts."""
+        rooms = []
+        try:
+            with socket.create_connection((self.host, self.port), timeout=MASTER_SERVER_TIMEOUT) as s:
+                s.sendall(b"LIST\n")
+                s.settimeout(MASTER_SERVER_TIMEOUT)
+                buf = b""
+                while True:
+                    chunk = s.recv(4096)
+                    if not chunk:
+                        break
+                    buf += chunk
+                    while b"\n" in buf:
+                        line, buf = buf.split(b"\n", 1)
+                        txt = line.decode("utf-8", "ignore").strip()
+                        if txt == "END":
+                            return rooms
+                        if txt.startswith("OLTG1,ROOM,"):
+                            fields = txt.split(",")
+                            room = _parse_room_payload(fields[1:])  # strip leading OLTG1
+                            if room:
+                                rooms.append(room)
+        except Exception:
+            pass
+        return rooms
+
+    # ---- internals ----
+
+    def _hb_loop(self):
+        while not self._stop_evt.is_set():
+            try:
+                payload = self._payload_fn()
+                self._send_line(f"REGISTER,{payload}")
+            except Exception:
+                pass
+            self._stop_evt.wait(MASTER_SERVER_HEARTBEAT)
+
+    def _send_line(self, line: str):
+        with socket.create_connection((self.host, self.port), timeout=MASTER_SERVER_TIMEOUT) as s:
+            s.sendall((line.rstrip("\n") + "\n").encode("utf-8"))
+
+
 async def _run_tcp_bridge(app, host, port, room):
     loop = asyncio.get_event_loop()
     clients = {}
@@ -1348,6 +1431,11 @@ class OLTogetherApp(tk.Tk):
         self.responder = LANDiscoveryResponder(self)
         self.browser = LANDiscoveryBrowser(self)
         self.config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "server_config.json")
+        # Master servers: list of dicts {name, host, port, enabled}
+        self.master_servers: list = [
+            {"name": "Official VPS", "host": "74.81.32.241", "port": MASTER_SERVER_PORT, "enabled": True}
+        ]
+        self._master_clients: list = []  # active MasterServerClient instances while hosting
         self._build_ui()
         self._load_settings()
         if not self.room_code_var.get().strip():
@@ -1635,12 +1723,139 @@ class OLTogetherApp(tk.Tk):
         scroll.grid(row=0, column=1, sticky="ns")
         self.rooms_tree.configure(yscrollcommand=scroll.set)
 
+        # ---- Master Servers panel (below room list) ----
+        ms_header = tk.Frame(card, bg=self.CARD)
+        ms_header.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(10, 2))
+        tk.Label(ms_header, text="MASTER SERVERS", font=("Segoe UI", 9, "bold"),
+                 bg=self.CARD, fg=self.CYAN).pack(side="left")
+        add_btn = tk.Label(ms_header, text="+ Add", font=("Segoe UI", 8), bg=self.CARD,
+                           fg=self.GREEN, cursor="hand2", padx=6)
+        add_btn.pack(side="right")
+        add_btn.bind("<Button-1>", lambda _: self._ms_add())
+
+        ms_list_frame = tk.Frame(card, bg=self.CARD)
+        ms_list_frame.grid(row=6, column=0, columnspan=2, sticky="ew")
+        self._ms_list_frame = ms_list_frame
+        self._ms_rebuild_list()
+
     def _build_footer(self, parent):
         footer = tk.Frame(parent, bg=self.BG)
         footer.pack(fill="x", pady=(10, 0))
         tk.Label(footer, textvariable=self.stats_var, font=("Segoe UI", 9), bg=self.BG, fg=self.DIM, anchor="w").pack(fill="x")
         self.log_text = tk.Text(footer, height=7, bg=self.PANEL, fg=self.DIM, insertbackground=self.CYAN, font=("Consolas", 9), relief="flat", highlightthickness=1, highlightbackground=self.BORDER)
         self.log_text.pack(fill="x", pady=(6, 0))
+
+    # -----------------------------------------------------------------------
+    # Master-server management UI helpers
+    # -----------------------------------------------------------------------
+
+    def _ms_rebuild_list(self):
+        """Rebuild the master-server row widgets from self.master_servers."""
+        for w in self._ms_list_frame.winfo_children():
+            w.destroy()
+        for idx, srv in enumerate(self.master_servers):
+            row = tk.Frame(self._ms_list_frame, bg=self.CARD)
+            row.pack(fill="x", pady=1)
+            # enabled checkbox
+            var = tk.BooleanVar(value=srv.get("enabled", True))
+            def _on_toggle(v=var, i=idx):
+                self.master_servers[i]["enabled"] = v.get()
+                self._save_settings()
+            cb = tk.Checkbutton(row, variable=var, command=_on_toggle,
+                                bg=self.CARD, activebackground=self.CARD,
+                                selectcolor=self.INPUT_BG, highlightthickness=0, bd=0)
+            cb.pack(side="left")
+            label = f"{srv['name']}  {srv['host']}:{srv['port']}"
+            tk.Label(row, text=label, font=("Segoe UI", 8), bg=self.CARD,
+                     fg=self.TEXT, anchor="w").pack(side="left", fill="x", expand=True)
+            # remove button
+            rm = tk.Label(row, text="✕", font=("Segoe UI", 8), bg=self.CARD,
+                          fg=self.DIM, cursor="hand2", padx=4)
+            rm.pack(side="right")
+            rm.bind("<Button-1>", lambda _, i=idx: self._ms_remove(i))
+            rm.bind("<Enter>", lambda e, l=rm: l.configure(fg=self.RED))
+            rm.bind("<Leave>", lambda e, l=rm: l.configure(fg=self.DIM))
+
+    def _ms_add(self):
+        """Open a small dialog to add a new master server entry."""
+        dlg = tk.Toplevel(self)
+        dlg.title("Add Master Server")
+        dlg.configure(bg=self.BG)
+        dlg.resizable(False, False)
+        dlg.grab_set()
+        fields = [("Name", "My Server"), ("Host / IP", ""), ("Port", str(MASTER_SERVER_PORT))]
+        entries = {}
+        for r, (lbl, default) in enumerate(fields):
+            tk.Label(dlg, text=lbl, font=("Segoe UI", 9), bg=self.BG, fg=self.DIM).grid(
+                row=r, column=0, sticky="w", padx=10, pady=4)
+            e = tk.Entry(dlg, bg=self.INPUT_BG, fg=self.TEXT, insertbackground=self.CYAN,
+                         font=("Segoe UI", 9), relief="flat", highlightthickness=1,
+                         highlightbackground=self.BORDER, highlightcolor=self.CYAN, width=28)
+            e.insert(0, default)
+            e.grid(row=r, column=1, sticky="ew", padx=10, pady=4)
+            entries[lbl] = e
+
+        def _ok():
+            name = entries["Name"].get().strip() or "Server"
+            host = entries["Host / IP"].get().strip()
+            port = _safe_int(entries["Port"].get().strip(), MASTER_SERVER_PORT)
+            if not host:
+                return
+            self.master_servers.append({"name": name, "host": host, "port": port, "enabled": True})
+            self._save_settings()
+            self._ms_rebuild_list()
+            dlg.destroy()
+
+        btn_row = tk.Frame(dlg, bg=self.BG)
+        btn_row.grid(row=len(fields), column=0, columnspan=2, pady=8)
+        tk.Button(btn_row, text="Add", command=_ok, bg=self.GREEN, fg=self.BG,
+                  font=("Segoe UI", 9, "bold"), relief="flat", padx=14, pady=4).pack(side="left", padx=4)
+        tk.Button(btn_row, text="Cancel", command=dlg.destroy, bg=self.CARD, fg=self.TEXT,
+                  font=("Segoe UI", 9), relief="flat", padx=10, pady=4).pack(side="left", padx=4)
+
+    def _ms_remove(self, idx: int):
+        try:
+            self.master_servers.pop(idx)
+        except IndexError:
+            pass
+        self._save_settings()
+        self._ms_rebuild_list()
+
+    def _ms_start_heartbeat(self):
+        """Start heartbeat threads for all enabled master servers."""
+        self._ms_stop_heartbeat()
+        for srv in self.master_servers:
+            if not srv.get("enabled", True):
+                continue
+            client = MasterServerClient(srv["host"], srv["port"])
+            client.start_heartbeat(self.discovery_payload)
+            self._master_clients.append(client)
+            self.log(f"Registered with master server: {srv['name']} ({srv['host']}:{srv['port']})")
+
+    def _ms_stop_heartbeat(self):
+        """Stop all active master server heartbeats."""
+        for c in self._master_clients:
+            try:
+                c.stop_heartbeat()
+            except Exception:
+                pass
+        self._master_clients.clear()
+
+    def _ms_fetch_rooms(self) -> list:
+        """Fetch rooms from all enabled master servers (background-safe)."""
+        rooms = []
+        for srv in self.master_servers:
+            if not srv.get("enabled", True):
+                continue
+            try:
+                client = MasterServerClient(srv["host"], srv["port"])
+                fetched = client.list_rooms()
+                for r in fetched:
+                    r["_source"] = srv["name"]
+                rooms.extend(fetched)
+            except Exception:
+                pass
+        return rooms
 
     def _generate_code(self):
         self.room_code_var.set(_generate_room_code())
@@ -1732,6 +1947,23 @@ class OLTogetherApp(tk.Tk):
                 self.voice_input_gain_var.set(float(voice.get("input_gain", 1.0)))
                 self.voice_noise_gate_var.set(float(voice.get("noise_gate", 0.02)))
                 self.voice_output_volume_var.set(float(voice.get("output_volume", 1.0)))
+            # Load master servers list
+            ms = data.get("master_servers", None)
+            if isinstance(ms, list) and ms:
+                # Validate each entry has required keys
+                valid = []
+                for s in ms:
+                    if isinstance(s, dict) and "host" in s:
+                        valid.append({
+                            "name": str(s.get("name", s["host"])),
+                            "host": str(s["host"]),
+                            "port": _safe_int(str(s.get("port", MASTER_SERVER_PORT)), MASTER_SERVER_PORT),
+                            "enabled": bool(s.get("enabled", True)),
+                        })
+                if valid:
+                    self.master_servers = valid
+                    if hasattr(self, "_ms_list_frame"):
+                        self._ms_rebuild_list()
         except Exception:
             pass
 
@@ -1753,6 +1985,7 @@ class OLTogetherApp(tk.Tk):
                 "noise_gate": self.voice_noise_gate_var.get(),
                 "output_volume": self.voice_output_volume_var.get(),
             },
+            "master_servers": self.master_servers,
         }
         try:
             with open(self.config_path, "w", encoding="utf-8") as f:
@@ -1807,6 +2040,8 @@ class OLTogetherApp(tk.Tk):
         loop = asyncio.new_event_loop()
         self._bridge_loop = loop
         threading.Thread(target=lambda: loop.run_until_complete(_run_tcp_bridge(self, host, port, self.room)), daemon=True).start()
+        # Register with enabled master servers so remote players can see the room
+        self._ms_start_heartbeat()
 
     def _stop_host(self):
         if not self.server_running:
@@ -1827,6 +2062,7 @@ class OLTogetherApp(tk.Tk):
                 pass
             self._voice_relay = None
         self._voice_position_lookup = None
+        self._ms_stop_heartbeat()
 
     def _launch(self, role):
         game_folder = self.game_path_var.get().strip()
@@ -1911,7 +2147,24 @@ class OLTogetherApp(tk.Tk):
                 "speedrun_mode": room.speedrun_mode,
                 "player_display": f"{len(self._bridge_clients)}/{room.player_limit}" if not room.unlimited else f"{len(self._bridge_clients)}/\u221e",
             })
-        visible = _sorted_rooms(rooms, self.sort_var.get(), self.search_var.get(), self.filter_region_var.get(), self.filter_type_var.get(), self.filter_players_var.get())
+        # Merge rooms from WAN master servers in a background thread so the UI
+        # isn't blocked by network calls.  Results are merged and re-rendered.
+        def _fetch_and_merge(lan_rooms):
+            wan = self._ms_fetch_rooms()
+            # Deduplicate by (host, port): LAN takes priority
+            seen = {(r.get("host"), r.get("port")) for r in lan_rooms}
+            for r in wan:
+                key = (r.get("host"), r.get("port"))
+                if key not in seen:
+                    lan_rooms.append(r)
+                    seen.add(key)
+            self.after(0, self._apply_browser_rooms, lan_rooms)
+        threading.Thread(target=_fetch_and_merge, args=(rooms,), daemon=True).start()
+
+    def _apply_browser_rooms(self, rooms):
+        visible = _sorted_rooms(rooms, self.sort_var.get(), self.search_var.get(),
+                                self.filter_region_var.get(), self.filter_type_var.get(),
+                                self.filter_players_var.get())
         self.rooms_tree.delete(*self.rooms_tree.get_children())
         self._row_rooms = {}
         for room in visible:
@@ -2273,6 +2526,145 @@ class HeadlessRelay:
             log_msg("Server stopped.")
 
 
+# ---------------------------------------------------------------------------
+# Master-server relay  (run this on the VPS: python OutlastTogether.py --master-server)
+# ---------------------------------------------------------------------------
+
+class MasterServerRelay:
+    """Simple room-directory server that runs on the VPS.
+
+    Clients connect over TCP and send one command per connection:
+
+      REGISTER,<CSV payload>   - announce / refresh a hosted room
+      UNREGISTER               - remove the room for this source IP
+      LIST                     - reply with all live rooms then END
+
+    The CSV payload is identical to the LAN discovery broadcast:
+      OLTG1,ROOM,<name>,<region>,<players>,<limit>,<unlimited>,<public>,
+             <allow_chat>,<password>,<code>,<host>,<port>,<speedrun>
+
+    Rooms expire automatically if not re-registered within ROOM_TTL seconds.
+    """
+
+    ROOM_TTL = MASTER_SERVER_HEARTBEAT * 3  # 90 s — three missed heartbeats
+
+    def __init__(self, bind_host: str = "0.0.0.0", port: int = MASTER_SERVER_PORT):
+        self.bind_host = bind_host
+        self.port = port
+        self._rooms: Dict[str, dict] = {}   # key = "host:port"
+        self._lock = threading.Lock()
+        self._server = None
+        self._loop = None
+
+    # ---- public ----
+
+    def start(self):
+        """Start the asyncio event loop (blocks until stopped)."""
+        self._loop = asyncio.new_event_loop()
+        self._loop.run_until_complete(self._run())
+
+    def stop(self):
+        if self._loop and self._server:
+            self._loop.call_soon_threadsafe(self._server.close)
+
+    # ---- internals ----
+
+    async def _run(self):
+        self._server = await asyncio.start_server(
+            self._handle, self.bind_host, self.port)
+        addr = self._server.sockets[0].getsockname()
+        _ms_log(f"Master server listening on {addr[0]}:{addr[1]}")
+        # Periodic expiry task
+        expiry_task = asyncio.get_event_loop().create_task(self._expire_loop())
+        async with self._server:
+            await self._server.serve_forever()
+        expiry_task.cancel()
+
+    async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+        peer = writer.get_extra_info("peername")
+        src_ip = peer[0] if peer else "unknown"
+        try:
+            raw = await asyncio.wait_for(reader.readline(), timeout=MASTER_SERVER_TIMEOUT)
+            line = raw.decode("utf-8", "ignore").strip()
+            if not line:
+                return
+            if line == "LIST":
+                await self._cmd_list(writer)
+            elif line.startswith("REGISTER,"):
+                self._cmd_register(line[9:], src_ip)
+            elif line == "UNREGISTER":
+                self._cmd_unregister(src_ip)
+        except Exception:
+            pass
+        finally:
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except Exception:
+                pass
+
+    async def _cmd_list(self, writer: asyncio.StreamWriter):
+        now = _now()
+        with self._lock:
+            live = [r for r in self._rooms.values()
+                    if now - r["_seen"] < self.ROOM_TTL and r.get("public", True)]
+        for room in live:
+            line = room["_raw"] + "\n"
+            writer.write(line.encode("utf-8"))
+        writer.write(b"END\n")
+        await writer.drain()
+        _ms_log(f"LIST → {len(live)} room(s)")
+
+    def _cmd_register(self, payload: str, src_ip: str):
+        # payload starts after "REGISTER," — may or may not have the OLTG1 prefix
+        if not payload.startswith("OLTG1,"):
+            payload = "OLTG1," + payload
+        fields = payload.split(",")
+        # fields[0]=OLTG1, fields[1]=ROOM, fields[2]=name, ..., fields[11]=host, fields[12]=port
+        # Override the host field with the actual source IP so NAT-ed hosts
+        # are reachable by their public address, not their self-reported LAN IP.
+        try:
+            if len(fields) >= 13:
+                fields[11] = src_ip
+            room = _parse_room_payload(fields[1:])  # strip OLTG1
+            if room is None:
+                return
+            room["_seen"] = _now()
+            room["_raw"] = ",".join(fields)  # store corrected payload for LIST replies
+            key = f"{src_ip}:{room.get('port', RELAY_PORT)}"
+            with self._lock:
+                self._rooms[key] = room
+            _ms_log(f"REGISTER {key}  '{room.get('name', '?')}'")
+        except Exception as exc:
+            _ms_log(f"REGISTER parse error from {src_ip}: {exc}")
+
+    def _cmd_unregister(self, src_ip: str):
+        with self._lock:
+            keys = [k for k in self._rooms if k.startswith(src_ip + ":")]
+            for k in keys:
+                self._rooms.pop(k, None)
+        if keys:
+            _ms_log(f"UNREGISTER {src_ip} ({len(keys)} room(s) removed)")
+
+    async def _expire_loop(self):
+        try:
+            while True:
+                await asyncio.sleep(30)
+                now = _now()
+                with self._lock:
+                    stale = [k for k, r in self._rooms.items()
+                             if now - r["_seen"] >= self.ROOM_TTL]
+                    for k in stale:
+                        _ms_log(f"EXPIRE {k}")
+                        self._rooms.pop(k, None)
+        except asyncio.CancelledError:
+            pass
+
+
+def _ms_log(msg: str):
+    print(f"[{time.strftime('%H:%M:%S')}] [master] {msg}", flush=True)
+
+
 def _load_headless_config(path):
     if not os.path.exists(path):
         return None
@@ -2314,6 +2706,9 @@ def main():
     public_room = True
     speedrun_mode = False
     host_arg_seen = False
+    master_server_mode = False
+    ms_bind = "0.0.0.0"
+    ms_port = MASTER_SERVER_PORT
 
     i = 1
     while i < len(sys.argv):
@@ -2323,6 +2718,16 @@ def main():
         elif arg in ("--docker",):
             docker_mode = True
             headless = True
+        elif arg in ("--master-server", "--master"):
+            master_server_mode = True
+        elif arg in ("--ms-bind",):
+            i += 1
+            if i < len(sys.argv):
+                ms_bind = sys.argv[i]
+        elif arg in ("--ms-port",):
+            i += 1
+            if i < len(sys.argv):
+                ms_port = _safe_int(sys.argv[i], MASTER_SERVER_PORT)
         elif arg in ("--config",):
             i += 1
             if i < len(sys.argv):
@@ -2367,14 +2772,17 @@ def main():
             print("OLTogether Multiplayer Server")
             print()
             print("GUI mode (default):")
-            print("  python server.py")
+            print("  python OutlastTogether.py")
             print()
-            print("Headless mode (CLI only, no GUI):")
-            print("  python server.py --headless [--host HOST] [--port PORT]")
-            print("  python server.py --headless --config server_config.json")
+            print("Master-server mode (run on VPS):")
+            print("  python OutlastTogether.py --master-server [--ms-bind 0.0.0.0] [--ms-port 47778]")
+            print()
+            print("Headless relay mode (CLI only, no GUI):")
+            print("  python OutlastTogether.py --headless [--host HOST] [--port PORT]")
+            print("  python OutlastTogether.py --headless --config server_config.json")
             print()
             print("Docker mode (alias for --headless):")
-            print("  python server.py --docker")
+            print("  python OutlastTogether.py --docker")
             print()
             print("Headless options:")
             print("  --config PATH          Load settings from JSON config")
@@ -2410,6 +2818,23 @@ def main():
             public_room = cfg["public_room"]
             password = cfg["password"]
             speedrun_mode = cfg["speedrun_mode"]
+
+    # ---- Master-server mode (VPS directory service) ----
+    if master_server_mode:
+        _ms_log(f"Starting master server on {ms_bind}:{ms_port}")
+        relay = MasterServerRelay(bind_host=ms_bind, port=ms_port)
+
+        def _ms_signal(signum, frame):
+            _ms_log("Shutting down...")
+            relay.stop()
+            sys.exit(0)
+
+        signal.signal(signal.SIGINT, _ms_signal)
+        if sys.platform != "win32":
+            signal.signal(signal.SIGTERM, _ms_signal)
+
+        relay.start()  # blocks until stopped
+        return
 
     if headless or docker_mode:
         if not room_code.strip():
