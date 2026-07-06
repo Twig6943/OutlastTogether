@@ -812,7 +812,10 @@ function OnReceiveData(string Data)
     HP = (F.Length >= 19) ? int(F[18]) : 100;
     LastReceivedLoc = IL;
     LastReceivedVel = IV;
-    LastReceivedRot = IR;
+    if (LM != 3 && LM != 4 && LM != 5 && LM != 6 && LM != 10)
+    {
+        LastReceivedRot = IR;
+    }
     RemoteHealth = HP;
     bHasReceivedData = true;
     if (RemotePawn == None) return;
@@ -900,6 +903,21 @@ function OnReceiveData(string Data)
     {
         PL = LastLocomotionMode;
         LastLocomotionMode = LM;
+        if (LM == 3 || LM == 4)
+        {
+            if (RH.CameraMeshShadowProxy != None)
+                RH.CameraMeshShadowProxy.SetHidden(true);
+            if (RH.ShadowProxyRightArmAnimSlot != None)
+                RH.ShadowProxyRightArmAnimSlot.StopCustomAnim(0.15);
+            if (RH.ShadowProxyLeftArmAnimSlot != None)
+                RH.ShadowProxyLeftArmAnimSlot.StopCustomAnim(0.15);
+        }
+        else if ((PL == 3 || PL == 4) && bLastRemoteCamcorder)
+        {
+            if (RH.CameraMeshShadowProxy != None)
+                RH.CameraMeshShadowProxy.SetHidden(false);
+            PlayCamcorderIdleAnim();
+        }
         switch (LM)
         {
             case 1:

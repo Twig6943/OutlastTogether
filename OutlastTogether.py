@@ -2426,7 +2426,10 @@ class OLTogetherApp(tk.Tk):
                 if parse_version(latest_version) > parse_version(current_version):
                     self.after(0, self._prompt_update, latest_version)
             except Exception as e:
-                self.log(f"Failed to check for updates: {e}")
+                if hasattr(e, "code") and e.code == 403:
+                    pass
+                else:
+                    self.log(f"Failed to check for updates: {e}")
                 
         threading.Thread(target=check, daemon=True).start()
 
