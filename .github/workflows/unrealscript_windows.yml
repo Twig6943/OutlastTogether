@@ -43,7 +43,8 @@ jobs:
       - name: Compile UnrealScript
         shell: pwsh
         run: |
-          & "C:\Outlast-Level-Editor\Binaries\Win32\UDK.com" make
+          & "C:\Outlast-Level-Editor\Binaries\Win32\UDK.com" make -log
+          Get-Content "C:\Outlast-Level-Editor\UDKGame\Logs\UDK.log" -Tail 50
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
