@@ -32,21 +32,30 @@ jobs:
       - name: Install dependencies
         shell: pwsh
         run: |
-          choco install -y dotnet4.0 directx
+          choco install -y dotnet4.0 directx 7zip
 
-      - name: Set up virtual display
+      - name: Set up software GPU (Mesa3D Lavapipe + DXVK)
         shell: pwsh
         run: |
-          $driver = "$env:TEMP\IddSampleDriver"
-          mkdir -Force $driver
-          curl -L -o "$driver\IddSampleDriver.zip" "https://github.com/ge9/IddSampleDriver/releases/download/0.0.1.4/IddSampleDriver.zip"
-          Expand-Archive "$driver\IddSampleDriver.zip" -DestinationPath $driver -Force
-          mkdir -Force C:\IddSampleDriver
-          "@`n3" | Out-File -FilePath "C:\IddSampleDriver\option.txt" -Encoding ascii
-          Copy-Item "$driver\IddSampleDriver\*" C:\IddSampleDriver\ -Force
-          & "$driver\IddSampleDriver\installCert.bat"
-          pnputil -i -a "C:\IddSampleDriver\iddsampledriver.inf"
-          Start-Sleep 5
+          # Download Mesa3D (Lavapipe software Vulkan driver)
+          curl -L -o "$env:TEMP\mesa.7z" "https://github.com/pal1000/mesa-dist-win/releases/download/26.1.3/mesa3d-26.1.3-release-msvc.7z"
+          7z x "$env:TEMP\mesa.7z" -o"$env:TEMP\mesa" -y | Out-Null
+
+          # Download DXVK (D3D11-to-Vulkan translation)
+          curl -L -o "$env:TEMP\dxvk.tar.gz" "https://github.com/doitsujin/dxvk/releases/download/v3.0.1/dxvk-3.0.1.tar.gz"
+          tar -xzf "$env:TEMP\dxvk.tar.gz" -C "$env:TEMP"
+
+          # Set Lavapipe as the Vulkan ICD
+          $lvp_icd = "$env:TEMP\mesa\x86\lvp_icd.x86.json"
+          $env:VK_ICD_FILENAMES = $lvp_icd
+          echo "VK_ICD_FILENAMES=$env:VK_ICD_FILENAMES" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+          # Copy DXVK 32-bit DLLs alongside UDK to intercept D3D11 calls
+          $udk_dir = "C:\Outlast-Level-Editor\Binaries\Win32"
+          Copy-Item "$env:TEMP\dxvk-3.0.1\x32\d3d11.dll"    "$udk_dir\d3d11.dll" -Force
+          Copy-Item "$env:TEMP\dxvk-3.0.1\x32\dxgi.dll"     "$udk_dir\dxgi.dll" -Force
+          Copy-Item "$env:TEMP\dxvk-3.0.1\x32\d3d10core.dll" "$udk_dir\d3d10core.dll" -Force
+          Write-Host "DXVK deployed to $udk_dir"
 
       - name: Configure DefaultEngine.ini
         shell: pwsh
@@ -63,8 +72,12 @@ jobs:
         shell: pwsh
         run: |
           $log = "C:\Outlast-Level-Editor\UDKGame\Logs\Launch.log"
-          $proc = Start-Process -FilePath "C:\Outlast-Level-Editor\Binaries\Win32\UDK.com" `
-            -ArgumentList "make -log" -PassThru -NoNewWindow `
+          $udk = "C:\Outlast-Level-Editor\Binaries\Win32\UDK.com"
+          $udkDir = "C:\Outlast-Level-Editor\Binaries\Win32"
+          $lvp_icd = "$env:TEMP\mesa\x86\lvp_icd.x86.json"
+          $env:VK_ICD_FILENAMES = $lvp_icd
+          $proc = Start-Process -FilePath $udk -ArgumentList "make -log" -PassThru -NoNewWindow `
+            -WorkingDirectory $udkDir `
             -RedirectStandardError "$env:TEMP\udk_stderr.txt"
           if (-not $proc.WaitForExit(300000)) {
             $proc.Kill()
@@ -72,12 +85,14 @@ jobs:
           }
           Write-Host "Exit code: $($proc.ExitCode)"
           if (Test-Path $log) {
+            Write-Host "=== Launch.log ==="
             Get-Content $log -Tail 100
           } else {
-            Write-Host "##[warning] Launch.log not found at $log"
-            Get-ChildItem "C:\Outlast-Level-Editor\UDKGame\Logs\" -Recurse
+            Write-Host "##[warning] Launch.log not found"
+            Get-ChildItem "C:\Outlast-Level-Editor\UDKGame\Logs" -Recurse -ErrorAction SilentlyContinue
           }
           if (Test-Path "$env:TEMP\udk_stderr.txt") {
+            Write-Host "=== stderr ==="
             Get-Content "$env:TEMP\udk_stderr.txt"
           }
 
