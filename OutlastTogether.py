@@ -236,19 +236,22 @@ CRITICAL_PREFIXES = (b"CHAT,", b"NAME,", b"NOTIF,", b"PONG,", b"SMOVE,", b"AUTH,
 
 VOICE_LOG = logging.getLogger("oltogether.voice")
 
-VOICE_MAGIC = b"OLTV1"
+VOICE_MAGIC = b"OLTV2"
+VOICE_MAGIC_V1 = b"OLTV1"  # accepted for backward compat
 VOICE_PORT = 7778
 VOICE_SAMPLE_RATE = 16000
 VOICE_FRAME_MS = 20
 VOICE_FRAME_SAMPLES = int(VOICE_SAMPLE_RATE * VOICE_FRAME_MS / 1000)
-VOICE_PACKET_FORMAT = "!5sIffH"
+# OLTV2 header: magic(5s) client_id(I) x(f) y(f) z(f) yaw_rad(f) pcm_len(H)
+VOICE_PACKET_FORMAT = "!5sIffffH"
 VOICE_PACKET_HEADER = struct.Struct(VOICE_PACKET_FORMAT)
-VOICE_MAX_PACKET = 4096
+VOICE_MAX_PACKET = 8192
 VOICE_BROADCAST_INTERVAL = 0.25
 
 # Local control channel from the game (OLTogetherVoiceListener.uc). Carries
-# the player's world position and push-to-talk key state so the voice client
-# can gate the mic and attenuate playback without any direct game integration.
+# the player's full 3D world position + yaw and push-to-talk state so the
+# voice client can do proper 3D spatial audio without game integration.
+# Format: POS,x,y,z,yaw_deg  PTT,0|1  PROX,near,far
 GAME_CONTROL_HOST = "127.0.0.1"
 GAME_CONTROL_PORT = 6700
 GAME_CONTROL_RETRY = 2.0
@@ -283,6 +286,7 @@ class VoicePeer:
     x: float = 0.0
     y: float = 0.0
     z: float = 0.0
+    yaw: float = 0.0   # radians, forward = 0
     last_seen: float = field(default_factory=_now)
     muted: bool = False
     ptt: bool = False
@@ -298,11 +302,6 @@ class VoiceRelay:
         self.clients_by_addr: Dict[Tuple[str, int], VoicePeer] = {}
         self.clients_by_id: Dict[int, VoicePeer] = {}
         self.next_id = 1
-        # Optional callable(ip) -> (x, y) that resolves a peer's authoritative
-        # in-game position (e.g. from the TCP relay's client roster). When set,
-        # this takes priority over the x/y a voice packet self-reports, since
-        # the voice client runs as a separate desktop process from the game
-        # and has no direct knowledge of the player's world position.
         self.position_lookup = position_lookup
 
     def start(self):
@@ -353,45 +352,55 @@ class VoiceRelay:
         return client
 
     def _handle_packet(self, data: bytes, addr: Tuple[str, int]):
-        if data.startswith(VOICE_MAGIC + b",JOIN,"):
+        if data.startswith(VOICE_MAGIC + b",JOIN,") or data.startswith(VOICE_MAGIC_V1 + b",JOIN,"):
             self._get_or_create_client(addr)
             return
-        if len(data) < VOICE_PACKET_HEADER.size or not data.startswith(VOICE_MAGIC):
+        is_v2 = data.startswith(VOICE_MAGIC)
+        is_v1 = (not is_v2) and data.startswith(VOICE_MAGIC_V1)
+        if not (is_v2 or is_v1):
             return
         try:
-            magic, client_id, x, y, pcm_len = VOICE_PACKET_HEADER.unpack_from(data)
-            if magic != VOICE_MAGIC:
-                return
-            pcm = data[VOICE_PACKET_HEADER.size:VOICE_PACKET_HEADER.size + pcm_len]
+            if is_v2:
+                if len(data) < VOICE_PACKET_HEADER.size:
+                    return
+                magic, client_id, x, y, z, yaw, pcm_len = VOICE_PACKET_HEADER.unpack_from(data)
+                pcm = data[VOICE_PACKET_HEADER.size:VOICE_PACKET_HEADER.size + pcm_len]
+            else:
+                # OLTV1 fallback: !5sIffH  (no z/yaw)
+                _hdr_v1 = struct.Struct("!5sIffH")
+                if len(data) < _hdr_v1.size:
+                    return
+                magic, client_id, x, y, pcm_len = _hdr_v1.unpack_from(data)
+                z, yaw = 0.0, 0.0
+                pcm = data[_hdr_v1.size:_hdr_v1.size + pcm_len]
             client = self._get_or_create_client(addr)
             client.client_id = client_id or client.client_id
             resolved = self.position_lookup(addr[0]) if self.position_lookup else None
             if resolved is not None:
                 client.x, client.y = resolved
             else:
-                client.x = x
-                client.y = y
+                client.x, client.y, client.z, client.yaw = x, y, z, yaw
             client.last_seen = _now()
             self._broadcast_audio(client, pcm)
         except Exception:
             return
 
     def _broadcast_audio(self, sender: VoicePeer, pcm: bytes):
+        """Forward audio to every other peer. We send full 3D position of the
+        sender so each client can compute its own spatial gain + pan."""
         if not self.sock:
             return
+        header = VOICE_PACKET_HEADER.pack(
+            VOICE_MAGIC, sender.client_id,
+            sender.x, sender.y, sender.z, sender.yaw,
+            len(pcm)
+        )
+        payload = header + pcm
         for client in list(self.clients_by_addr.values()):
             if client.address == sender.address:
                 continue
-            dist = math.hypot(client.x - sender.x, client.y - sender.y)
-            if dist > 5000.0:
-                continue
-            gain = max(0.0, 1.0 - dist / 5000.0)
-            if gain <= 0.01:
-                continue
-            # forward packet with simple attenuation hint in header
-            header = VOICE_PACKET_HEADER.pack(VOICE_MAGIC, sender.client_id, sender.x, sender.y, len(pcm))
             try:
-                self.sock.sendto(header + pcm, client.address)
+                self.sock.sendto(payload, client.address)
             except Exception:
                 continue
 
@@ -412,13 +421,13 @@ class VoiceClient:
         self.control_sock: Optional[socket.socket] = None
         self.x: float = 0.0
         self.y: float = 0.0
+        self.z: float = 0.0
+        self.yaw: float = 0.0   # radians; updated from game POS line
         self.client_id: int = 0
-        # ptt reflects whether the mic should currently be transmitting. It is
-        # driven entirely by PTT, lines from the game: true when push-to-talk
-        # is disabled (always-on) or the bind is currently held.
+        # ptt: true when always-on OR push-to-talk bind is held
         self.ptt: bool = False
         self.prox_near: float = 800.0
-        self.prox_far: float = 2500.0
+        self.prox_far: float = 5000.0
 
     def start(self, host: str, port: int):
         if self.running:
@@ -496,6 +505,12 @@ class VoiceClient:
             if parts[0] == "POS" and len(parts) >= 3:
                 self.x = float(parts[1])
                 self.y = float(parts[2])
+                if len(parts) >= 4:
+                    self.z = float(parts[3])
+                if len(parts) >= 5:
+                    # yaw_deg from UE3 (0=East, increases CCW). Convert to
+                    # standard math radians so trig works consistently.
+                    self.yaw = math.radians(float(parts[4]))
             elif parts[0] == "PTT" and len(parts) >= 2:
                 self.ptt = parts[1] == "1"
             elif parts[0] == "PROX" and len(parts) >= 3:
@@ -535,12 +550,12 @@ class VoiceClient:
             VOICE_LOG.info("Voice mic streaming to %s:%s (device=%s)", host, port,
                            self.mic_device or "Default")
             try:
+                import numpy as np
                 while self.running:
                     if not self.ptt:
                         time.sleep(0.02)
                         continue
                     data, _ = stream.read(VOICE_FRAME_SAMPLES)
-                    import numpy as np
                     pcm_f = data.astype(np.float32) / 32768.0
                     vs = self.voice_settings
                     pcm_f *= vs.input_gain
@@ -549,7 +564,12 @@ class VoiceClient:
                         continue
                     np.clip(pcm_f, -1.0, 1.0, out=pcm_f)
                     pcm = (pcm_f * 32767.0).astype(np.int16).tobytes()
-                    header = VOICE_PACKET_HEADER.pack(VOICE_MAGIC, self.client_id, self.x, self.y, len(pcm))
+                    # OLTV2: include full 3D position + yaw so relay forwards it
+                    header = VOICE_PACKET_HEADER.pack(
+                        VOICE_MAGIC, self.client_id,
+                        self.x, self.y, self.z, self.yaw,
+                        len(pcm)
+                    )
                     try:
                         self.sock.sendto(header + pcm, (host, port))
                     except Exception as send_exc:
@@ -591,29 +611,87 @@ class VoiceClient:
             pass
 
     def _play_audio(self, data: bytes):
-        if len(data) < VOICE_PACKET_HEADER.size or not data.startswith(VOICE_MAGIC):
+        """3D spatial audio playback.
+
+        Computes distance attenuation (inverse-square between prox_near and
+        prox_far) and horizontal stereo panning based on the angle between the
+        listener's facing direction and the vector to the speaker.
+        Output is stereo so headphones and speakers both benefit.
+        """
+        if not (data.startswith(VOICE_MAGIC) or data.startswith(VOICE_MAGIC_V1)):
+            return
+        if len(data) < VOICE_PACKET_HEADER.size:
             return
         try:
-            magic, client_id, x, y, pcm_len = VOICE_PACKET_HEADER.unpack_from(data)
+            magic, client_id, sx, sy, sz, syaw, pcm_len = VOICE_PACKET_HEADER.unpack_from(data)
             pcm = data[VOICE_PACKET_HEADER.size:VOICE_PACKET_HEADER.size + pcm_len]
             if pcm_len == 0 or len(pcm) < pcm_len:
                 return
             import sounddevice as sd
             import numpy as np
-            audio = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
-            # Apply distance attenuation
-            dist = ((x - self.x) ** 2 + (y - self.y) ** 2) ** 0.5
-            if dist < self.prox_near:
+
+            mono = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
+
+            # --- Distance attenuation (inverse-square law) ---
+            dx = sx - self.x
+            dy = sy - self.y
+            dz = sz - self.z
+            dist3d = math.sqrt(dx*dx + dy*dy + dz*dz)
+
+            near = max(1.0, self.prox_near)
+            far  = max(near + 1.0, self.prox_far)
+
+            if dist3d >= far:
+                return  # out of range, silence
+            if dist3d <= near:
                 gain = 1.0
-            elif dist >= self.prox_far:
-                gain = 0.0
             else:
-                gain = 1.0 - (dist - self.prox_near) / max(1.0, self.prox_far - self.prox_near)
-            if gain <= 0.01:
+                # smooth inverse-square between near and far
+                t = (dist3d - near) / (far - near)  # 0..1
+                gain = (1.0 - t) ** 2
+
+            if gain <= 0.005:
                 return
-            audio *= gain * self.voice_settings.output_volume
-            np.clip(audio, -1.0, 1.0, out=audio)
-            sd.play(audio, samplerate=VOICE_SAMPLE_RATE, blocking=False)
+
+            gain *= self.voice_settings.output_volume
+
+            # --- 3D Stereo panning (listener-relative horizontal angle) ---
+            # listener_yaw: our camera yaw in radians (UE3 convention)
+            # speaker is at angle theta relative to listener forward
+            horiz_dist = math.sqrt(dx*dx + dy*dy)
+            if horiz_dist > 0.1:
+                # world angle from listener to speaker
+                angle_to_speaker = math.atan2(dy, dx)  # world-space
+                # relative angle: subtract listener yaw
+                rel_angle = angle_to_speaker - self.yaw
+                # normalise to -pi .. +pi
+                rel_angle = (rel_angle + math.pi) % (2 * math.pi) - math.pi
+                # pan: +1.0 = full right, -1.0 = full left
+                pan = math.sin(rel_angle)  # smooth -1..+1
+            else:
+                pan = 0.0  # speaker directly above/below: centred
+
+            # Elevation: sounds above/below lose high-freq shimmer
+            # Simulate with subtle gain reduction for large elevation diff
+            elev_factor = 1.0
+            if horiz_dist > 0.1:
+                elev_angle = math.atan2(abs(dz), horiz_dist)  # 0..pi/2
+                elev_factor = 1.0 - 0.35 * (elev_angle / (math.pi / 2))
+
+            gain *= elev_factor
+
+            # Constant-power panning (keeps perceived loudness even)
+            pan_rad = pan * (math.pi / 4)  # map -1..1 -> -45..+45 deg
+            l_gain = gain * math.cos(pan_rad + math.pi / 4)
+            r_gain = gain * math.sin(pan_rad + math.pi / 4)
+
+            # Build stereo frame
+            stereo = np.empty((len(mono), 2), dtype=np.float32)
+            stereo[:, 0] = mono * l_gain
+            stereo[:, 1] = mono * r_gain
+            np.clip(stereo, -1.0, 1.0, out=stereo)
+
+            sd.play(stereo, samplerate=VOICE_SAMPLE_RATE, blocking=False)
         except Exception as exc:
             VOICE_LOG.debug("Voice playback error: %s", exc)
 
@@ -2095,7 +2173,7 @@ class OLTogetherApp(tk.Tk):
         if room.speedrun_mode:
             url += "?SpeedrunMode=1"
         try:
-            subprocess.Popen([game_path, url, "-log", "-windowed", "-ResX=800", "-ResY=600"])
+            subprocess.Popen([game_path, url])
         except Exception:
             pass
         self._start_voice_client(host, control_port)
