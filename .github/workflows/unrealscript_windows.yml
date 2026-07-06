@@ -43,9 +43,9 @@ jobs:
           Expand-Archive "$driver\IddSampleDriver.zip" -DestinationPath $driver -Force
           mkdir -Force C:\IddSampleDriver
           "@`n3" | Out-File -FilePath "C:\IddSampleDriver\option.txt" -Encoding ascii
-          Push-Location $driver
-          & .\installDriver.bat
-          Pop-Location
+          Copy-Item "$driver\IddSampleDriver\*" C:\IddSampleDriver\ -Force
+          & "$driver\IddSampleDriver\installCert.bat"
+          pnputil -i -a "C:\IddSampleDriver\iddsampledriver.inf"
           Start-Sleep 5
 
       - name: Configure DefaultEngine.ini
