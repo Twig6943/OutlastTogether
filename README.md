@@ -26,5 +26,5 @@ For Join:
 
 # Credits
 - MeinaWithAI
-- superboo007
+- superboo07
 - Twig6943
