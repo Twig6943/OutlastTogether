@@ -1,0 +1,33 @@
+name: Build Launcher (Linux)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Install Podman
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman
+
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Build container image
+        run: podman build -t outlast-launcher -f ci/Containerfile_launcher .
+
+      - name: Extract binary from image
+        run: |
+          id=$(podman create localhost/outlast-launcher)
+          podman cp "$id":/build/OutlastLauncher.exe ./OutlastLauncher.exe
+          podman rm "$id"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: Launcher
+          path: OutlastLauncher.exe
+          archive: false

@@ -1,0 +1,68 @@
+FROM ubuntu:24.04
+
+# Fun fact UDK.com is written with dotnet 4x it seems. Also makes use of
+# DX9 so that's why drivers are installed
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PROTON_ENABLE_WAYLAND=1
+ENV WINEPREFIX=/build/wine/prefix
+ENV WINEDEBUG=fixme-all
+ENV WINEDLLOVERRIDES="winemenubuilder.exe=d"
+ENV XDG_RUNTIME_DIR=/build/xdg
+ENV WLR_RENDERER=pixman
+
+# ---- Dependencies ----
+RUN dpkg --add-architecture i386 && \
+    apt-get update && apt-get install -y \
+        sudo curl wget gnupg2 ca-certificates tar xz-utils \
+        cage xwayland-run \
+        winbind lib32gcc-s1 lib32stdc++6 libc6-i386 git python3 python3-pip p7zip-full \
+        libegl1:i386 libegl-mesa0:i386 libgl1:i386 libgles2:i386 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install gdown --break-system-packages
+
+# ---- WineHQ ----
+RUN mkdir -pm755 /etc/apt/keyrings && \
+    curl -fsSL https://dl.winehq.org/wine-builds/winehq.key \
+        -o /etc/apt/keyrings/winehq-archive.key && \
+    curl -fsSL https://dl.winehq.org/wine-builds/ubuntu/dists/noble/winehq-noble.sources \
+        -o /etc/apt/sources.list.d/winehq-noble.sources && \
+    apt-get update && \
+    apt-get install -y --install-recommends winehq-devel && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+COPY . .
+
+RUN git clone https://github.com/superboo07/Outlast-Level-Editor /build/Outlast-Level-Editor && \
+    gdown 'https://drive.google.com/uc?id=1IZed_3QAivpnU2uPlSClFVs-YOZrIpcd' && \
+    7z x 96778-udkinstall-2013-07.exe Binaries -o/build/Outlast-Level-Editor && \
+    mkdir -p /build/Outlast-Level-Editor/Development/Src/Multiplayer && \
+    cp -r /build/Classes/ /build/Outlast-Level-Editor/Development/Src/Multiplayer/ && \
+    grep -qxF '+ModEditPackages=Multiplayer' \
+        /build/Outlast-Level-Editor/UDKGame/Config/DefaultEngine.ini || \
+    sed -i '/^+ModEditPackages=TAS$/a +ModEditPackages=Multiplayer' \
+        /build/Outlast-Level-Editor/UDKGame/Config/DefaultEngine.ini
+
+# ---- Create prefix headlessly ----
+RUN mkdir -p $WINEPREFIX $XDG_RUNTIME_DIR && \
+    wineboot -u 2>/dev/null; \
+    wineserver -w; \
+    wget -q https://dl.winehq.org/wine/wine-mono/11.2.0/wine-mono-11.2.0-x86.msi && \
+    wine msiexec /i wine-mono-11.2.0-x86.msi 2>/dev/null; \
+    wineserver -w; \
+    rm -f wine-mono-11.2.0-x86.msi; \
+    wine reg add "HKEY_CURRENT_USER\\Software\\Wine\\Drivers" \
+        /v Graphics /t REG_SZ /d wayland /f 2>/dev/null; \
+    wineserver -w; \
+    echo "PREFIX READY"
+
+# ---- Build under cage headless ----
+RUN wlheadless-run -c cage -- \
+        wine /build/Outlast-Level-Editor/Binaries/Win32/UDK.com make -log && \
+    echo "BUILD SUCCESS"
+
+# Debug
+RUN ls /build/Outlast-Level-Editor/UDKGame && ls /build/Outlast-Level-Editor/UDKGame/Script

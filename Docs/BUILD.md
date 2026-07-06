@@ -2,25 +2,37 @@
 
 ### Windows
 ```
-choco install -y mingw python312
-pip install nuitka --break-system-packages
-python -m pip install --no-python-version-warning --disable-pip-version-check -r requirements.txt
-python -m nuitka --mingw64 --enable-plugin=tk-inter --onefile OutlastTogether.py --output-filename=OutlastLauncher.exe
+choco install -y python312
+pip install --no-python-version-warning --disable-pip-version-check nuitka zstandard ordered-set -r requirements.txt
+build_launcher.bat
 ```
 
-### Linux (cross-compile to windows) (It's not recommended to use the linux version of outlast)
+### Linux (cross-compile to windows)
+
+- It's not recommended to use the linux version of outlast for various reasons.
+
+Provided as a containerfile for ci, though it'll compile fine if you just use the necessary commands from it on your host.
+
 ```
-./Cross_compile.sh
+podman build -t outlast-launcher -f ci/Containerfile_launcher .
 ```
 
-# Unreal script
+# UnrealScript
 
-### Prerequisites
+## Prerequisites
 - A copy of Outlast
-- [UDK](https://drive.google.com/file/d/1IZed_3QAivpnU2uPlSClFVs-YOZrIpcd/view)
+- [Outlast level editor](https://github.com/superboo07/Outlast-Level-Editor) (Don't forget to setup UDK like it tells you to)
+
+### Windows
 
 ```
-Compile.bat
+build_unrealscript.bat
+```
+
+### Linux
+
+```
+podman build -t outlast-unrealscript -f ci/Containerfile_unrealscript .
 ```
 
 Output should be at `%UDK%\UDKGame\Script\Multiplayer.u`

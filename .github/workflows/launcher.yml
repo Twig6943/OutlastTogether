@@ -1,0 +1,26 @@
+name: Build Launcher
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Nuitka
+        shell: pwsh
+        run: |
+          choco install -y python312
+          pip install --no-python-version-warning --disable-pip-version-check nuitka zstandard ordered-set -r requirements.txt
+          .\build_launcher.bat
+
+      - name: Upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: Launcher
+          path: OutlastLauncher.exe
+          archive: false
