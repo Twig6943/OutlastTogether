@@ -272,10 +272,18 @@ event PlayerTick(float DeltaTime)
             $ (MyHero != None ? int(MyHero.PreciseHealth) : 100);
         ConnectionLink.SendText(Packet $ "\n");
     }
-    if (VoiceListener != None && VoiceListener.bClientConnected && Pawn != None && WorldInfo.TimeSeconds - LastVoiceControlSendTime > 0.1)
+    if (VoiceListener != None && VoiceListener.bClientConnected && Pawn != None && WorldInfo.TimeSeconds - LastVoiceControlSendTime > 0.05)
     {
         LastVoiceControlSendTime = WorldInfo.TimeSeconds;
-        VoiceListener.SendControl("POS," $ Pawn.Location.X $ "," $ Pawn.Location.Y);
+        // Full 3D position + camera yaw (in degrees) for 3D spatial audio.
+        // UE3 rotator Yaw is in unreal-units (65536 = 360 deg); convert to degrees.
+        VoiceListener.SendControl(
+            "POS,"
+            $ Pawn.Location.X $ ","
+            $ Pawn.Location.Y $ ","
+            $ Pawn.Location.Z $ ","
+            $ (Rotation.Yaw * (360.0 / 65536.0))
+        );
         VoiceListener.SendControl("PTT," $ int(bMicTransmitting));
         if (Settings != None)
             VoiceListener.SendControl("PROX," $ int(Settings.VoiceProximityNear) $ "," $ int(Settings.VoiceProximityFar));

@@ -1,9 +1,16 @@
-__pycache__
+__pycache__/
 server_config.json
 *.exe
 *.cmd
 
 nuitka-crash-report.xml
 
+# Build and dist folders
 *.dist/
 *build/
+OutlastTogether.build/
+OutlastTogether.dist/
+OutlastTogether.onefile-build/
+OutlastTogetherLauncher.spec
+Config/
+

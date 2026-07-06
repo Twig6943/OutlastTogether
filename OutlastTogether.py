@@ -20,6 +20,47 @@ from urllib.parse import quote
 
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
+import tkinter.font as tkfont
+
+
+# ---------------------------------------------------------------------------
+# Custom font: JetBrains Mono Bold
+# Windows registers the TTF via AddFontResourceEx so tkinter can reference it
+# by family name without needing to install it system-wide.
+# ---------------------------------------------------------------------------
+_JBM_FAMILY = "JetBrains Mono"   # the family name embedded in the TTF
+
+def _load_custom_font():
+    """Register JetBrainsMono-Bold.ttf with the Windows font engine."""
+    path = _resource_path("JetBrainsMono-Bold.ttf")
+    if not os.path.isfile(path):
+        return False
+    try:
+        FR_PRIVATE = 0x10
+        ctypes.windll.gdi32.AddFontResourceExW(path, FR_PRIVATE, None)
+        return True
+    except Exception:
+        return False
+
+
+# Will be set to the real family name if loading succeeds, else a safe fallback.
+_FONT_LOADED = False
+APP_FONT      = "Segoe UI"
+APP_FONT_MONO = "Segoe UI"
+
+
+def _init_font():
+    """Call once after the Tk root is created to finalise font constants."""
+    global APP_FONT, APP_FONT_MONO, _FONT_LOADED
+    ok = _load_custom_font()
+    available = [f.lower() for f in tkfont.families()]
+    if ok and _JBM_FAMILY.lower() in available:
+        family = _JBM_FAMILY
+        _FONT_LOADED = True
+    else:
+        family = "Consolas"
+    APP_FONT      = family
+    APP_FONT_MONO = family
 
 LOG = logging.getLogger("oltogether")
 
@@ -105,7 +146,7 @@ class MicMeter:
         self._color = "#00ff88"
         self._gate = 0.0
         self._gated = True
-        self._label = tk.Label(self.frame, text="MIC \u2014 no signal", font=("Segoe UI", 8), bg=bg, fg="#5a6577")
+        self._label = tk.Label(self.frame, text="MIC \u2014 no signal", font=(APP_FONT, 8), bg=bg, fg="#5a6577")
         self._label.pack(fill="x")
 
     def push(self, volume):
@@ -1458,6 +1499,7 @@ class OLTogetherApp(tk.Tk):
 
     def __init__(self):
         super().__init__()
+        _init_font()
         host = ""
         port = RELAY_PORT
         self.overrideredirect(True)
@@ -1482,6 +1524,7 @@ class OLTogetherApp(tk.Tk):
         self.speedrun_mode_var = tk.BooleanVar(value=False)
         self.game_path_var = tk.StringVar(value="")
         self.game_arch_var = tk.StringVar(value="Win64")
+        self.game_extra_args_var = tk.StringVar(value="")
         self.status_var = tk.StringVar(value="OFFLINE")
         self.stats_var = tk.StringVar(value="")
         self.search_var = tk.StringVar(value="")
@@ -1571,9 +1614,9 @@ class OLTogetherApp(tk.Tk):
         bar.bind("<B1-Motion>", self._on_drag)
         title_frame = tk.Frame(bar, bg=self.PANEL)
         title_frame.pack(side="left", fill="y", padx=14)
-        tk.Label(title_frame, text="OLTogether", font=("Segoe UI", 13, "bold"), bg=self.PANEL, fg=self.CYAN).pack(side="left")
-        tk.Label(title_frame, text="  MULTIPLAYER", font=("Segoe UI", 9), bg=self.PANEL, fg=self.DIM).pack(side="left", padx=(4, 0))
-        status_label = tk.Label(title_frame, textvariable=self.status_var, font=("Segoe UI", 9, "bold"), bg=self.PANEL, fg=self.GREEN)
+        tk.Label(title_frame, text="OLTogether", font=(APP_FONT, 13, "bold"), bg=self.PANEL, fg=self.CYAN).pack(side="left")
+        tk.Label(title_frame, text="  MULTIPLAYER", font=(APP_FONT, 9), bg=self.PANEL, fg=self.DIM).pack(side="left", padx=(4, 0))
+        status_label = tk.Label(title_frame, textvariable=self.status_var, font=(APP_FONT, 9, "bold"), bg=self.PANEL, fg=self.GREEN)
         status_label.pack(side="left", padx=(16, 0))
         self._status_label = status_label
         btn_frame = tk.Frame(bar, bg=self.PANEL)
@@ -1582,7 +1625,7 @@ class OLTogetherApp(tk.Tk):
         self._make_title_btn(btn_frame, "\u2014", self._minimize, self.DIM)
 
     def _make_title_btn(self, parent, text, command, hover_color):
-        btn = tk.Label(parent, text=text, font=("Segoe UI", 11, "bold"), bg=self.PANEL, fg=self.DIM, padx=12, pady=2, cursor="hand2")
+        btn = tk.Label(parent, text=text, font=(APP_FONT, 11, "bold"), bg=self.PANEL, fg=self.DIM, padx=12, pady=2, cursor="hand2")
         btn.pack(side="right", padx=2)
         btn.bind("<Enter>", lambda e, c=hover_color, l=btn: l.configure(fg=c))
         btn.bind("<Leave>", lambda e, l=btn: l.configure(fg=self.DIM))
@@ -1615,7 +1658,7 @@ class OLTogetherApp(tk.Tk):
 
     def _neon_button(self, parent, text, command, color, **kw):
         frame = tk.Frame(parent, bg=self.BG)
-        btn = tk.Label(frame, text=text, font=("Segoe UI", 9, "bold"), bg=self.CARD, fg=color, padx=14, pady=6, cursor="hand2", **kw)
+        btn = tk.Label(frame, text=text, font=(APP_FONT, 9, "bold"), bg=self.CARD, fg=color, padx=14, pady=6, cursor="hand2", **kw)
         btn.pack(fill="x")
         btn.bind("<Enter>", lambda e: btn.configure(bg=self._brighten(color, 0.15)))
         btn.bind("<Leave>", lambda e: btn.configure(bg=self.CARD))
@@ -1635,20 +1678,20 @@ class OLTogetherApp(tk.Tk):
     def _card(self, parent, title):
         wrapper = tk.Frame(parent, bg=self.BG, pady=6)
         wrapper.pack(fill="both", expand=True)
-        header = tk.Label(wrapper, text=title, font=("Segoe UI", 11, "bold"), bg=self.BG, fg=self.CYAN, anchor="w")
+        header = tk.Label(wrapper, text=title, font=(APP_FONT, 11, "bold"), bg=self.BG, fg=self.CYAN, anchor="w")
         header.pack(fill="x", pady=(0, 6))
         body = tk.Frame(wrapper, bg=self.CARD, padx=12, pady=10)
         body.pack(fill="both", expand=True)
         return body
 
     def _field(self, parent, row, label, var):
-        tk.Label(parent, text=label, font=("Segoe UI", 9), bg=self.CARD, fg=self.DIM, anchor="w").grid(row=row, column=0, sticky="w", pady=4, padx=(0, 8))
-        entry = tk.Entry(parent, textvariable=var, bg=self.INPUT_BG, fg=self.TEXT, insertbackground=self.CYAN, font=("Segoe UI", 9), relief="flat", bd=0, highlightthickness=1, highlightbackground=self.BORDER, highlightcolor=self.CYAN)
+        tk.Label(parent, text=label, font=(APP_FONT, 9), bg=self.CARD, fg=self.DIM, anchor="w").grid(row=row, column=0, sticky="w", pady=4, padx=(0, 8))
+        entry = tk.Entry(parent, textvariable=var, bg=self.INPUT_BG, fg=self.TEXT, insertbackground=self.CYAN, font=(APP_FONT, 9), relief="flat", bd=0, highlightthickness=1, highlightbackground=self.BORDER, highlightcolor=self.CYAN)
         entry.grid(row=row, column=1, sticky="ew", pady=4, padx=(0, 4))
         return entry
 
     def _checkbox(self, parent, row, col, text, var):
-        cb = tk.Checkbutton(parent, text=text, variable=var, font=("Segoe UI", 9), bg=self.CARD, fg=self.TEXT, selectcolor=self.INPUT_BG, activebackground=self.CARD, activeforeground=self.CYAN, highlightthickness=0, bd=0)
+        cb = tk.Checkbutton(parent, text=text, variable=var, font=(APP_FONT, 9), bg=self.CARD, fg=self.TEXT, selectcolor=self.INPUT_BG, activebackground=self.CARD, activeforeground=self.CYAN, highlightthickness=0, bd=0)
         cb.grid(row=row, column=col, sticky="w", pady=2, padx=2)
         return cb
 
@@ -1673,14 +1716,27 @@ class OLTogetherApp(tk.Tk):
         self._host_entry.bind("<Control-v>", self._reveal_host_ip)
         self._host_entry.bind("<Button-1>", self._reveal_host_ip)
         self._field(card, 11, "Player Name", self.name_var)
+        extra_frame = tk.Frame(card, bg=self.CARD)
+        extra_frame.grid(row=12, column=0, columnspan=4, sticky="ew", pady=(4, 0))
+        extra_frame.columnconfigure(1, weight=1)
+        tk.Label(extra_frame, text="Extra Launch Args", font=(APP_FONT, 9), bg=self.CARD,
+                 fg=self.DIM, anchor="w").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        extra_entry = tk.Entry(extra_frame, textvariable=self.game_extra_args_var,
+                               bg=self.INPUT_BG, fg=self.TEXT, insertbackground=self.CYAN,
+                               font=(APP_FONT, 9), relief="flat", bd=0,
+                               highlightthickness=1, highlightbackground=self.BORDER,
+                               highlightcolor=self.CYAN)
+        extra_entry.grid(row=0, column=1, sticky="ew")
+        tk.Label(extra_frame, text="e.g. -dx11 -log ?Key=Val", font=(APP_FONT, 7),
+                 bg=self.CARD, fg=self.DIM, anchor="w").grid(row=1, column=1, sticky="w")
         browse_row = tk.Frame(card, bg=self.CARD)
-        browse_row.grid(row=12, column=0, columnspan=4, sticky="ew", pady=(6, 0))
+        browse_row.grid(row=13, column=0, columnspan=4, sticky="ew", pady=(6, 0))
         browse_row.columnconfigure(0, weight=1)
         browse = self._neon_button(browse_row, "Browse Folder...", self._browse_game, self.BLUE)
         browse.grid(row=0, column=0, sticky="ew")
         arch_frame = tk.Frame(browse_row, bg=self.CARD)
         arch_frame.grid(row=0, column=1, padx=(6, 0), sticky="e")
-        tk.Label(arch_frame, text="Arch", font=("Segoe UI", 8), bg=self.CARD, fg=self.DIM).pack(side="left")
+        tk.Label(arch_frame, text="Arch", font=(APP_FONT, 8), bg=self.CARD, fg=self.DIM).pack(side="left")
         # The arch_var stores the internal key ("Win64"/"Win32") used for exe
         # resolution; the OptionMenu maps to user-friendly labels ("64-bit",
         # "32-bit").  A reverse lookup translates the label back to the key.
@@ -1697,37 +1753,39 @@ class OLTogetherApp(tk.Tk):
 
         arch_var_label.trace_add("write", lambda *_: _on_arch_change(arch_var_label))
         arch_menu = tk.OptionMenu(arch_frame, arch_var_label, "64-bit", "32-bit")
-        arch_menu.configure(bg=self.INPUT_BG, fg=self.TEXT, font=("Segoe UI", 9))
+        arch_menu.configure(bg=self.INPUT_BG, fg=self.TEXT, font=(APP_FONT, 9), highlightthickness=0, bd=0, activebackground=self.CYAN, activeforeground=self.BG)
+        arch_menu["menu"].configure(bg=self.CARD, fg=self.TEXT, activebackground=self.CYAN, activeforeground=self.BG)
         arch_menu.pack(side="left", padx=(4, 0))
-        self._game_status_label = tk.Label(card, text="", font=("Segoe UI", 8), bg=self.CARD, fg=self.DIM, anchor="w")
+        self._game_status_label = tk.Label(card, text="", font=(APP_FONT, 8), bg=self.CARD, fg=self.DIM, anchor="w")
         self._game_status_label.grid(row=10, column=0, columnspan=4, sticky="ew")
         self.game_path_var.trace_add("write", lambda *_: self._update_game_status())
         self.game_arch_var.trace_add("write", lambda *_: self._update_game_status())
-        tk.Label(card, text="Mic Device", font=("Segoe UI", 9), bg=card.cget("bg"), fg=self.DIM).grid(row=13, column=0, sticky="w", pady=(10, 4))
+        tk.Label(card, text="Mic Device", font=(APP_FONT, 9), bg=card.cget("bg"), fg=self.DIM).grid(row=14, column=0, sticky="w", pady=(10, 4))
         mic_devices = _get_audio_devices()
         if self.mic_var.get() not in mic_devices:
             self.mic_var.set(mic_devices[0] if mic_devices else "Default")
         mic_main = tk.OptionMenu(card, self.mic_var, self.mic_var.get(), *mic_devices)
-        mic_main.configure(bg=self.INPUT_BG, fg=self.TEXT, font=("Segoe UI", 9))
-        mic_main.grid(row=13, column=1, columnspan=3, sticky="ew", pady=(10, 4))
+        mic_main.configure(bg=self.INPUT_BG, fg=self.TEXT, font=(APP_FONT, 9), highlightthickness=0, bd=0, activebackground=self.CYAN, activeforeground=self.BG)
+        mic_main["menu"].configure(bg=self.CARD, fg=self.TEXT, activebackground=self.CYAN, activeforeground=self.BG)
+        mic_main.grid(row=14, column=1, columnspan=3, sticky="ew", pady=(10, 4))
         self._mic_meter = MicMeter(card, bg=self.CARD)
-        self._mic_meter.frame.grid(row=14, column=0, columnspan=4, sticky="ew", pady=(2, 4))
+        self._mic_meter.frame.grid(row=15, column=0, columnspan=4, sticky="ew", pady=(2, 4))
         self._mic_meter.set_color(self.GREEN)
 
         settings_row = tk.Frame(card, bg=self.CARD)
-        settings_row.grid(row=15, column=0, columnspan=4, sticky="ew", pady=(0, 4))
+        settings_row.grid(row=16, column=0, columnspan=4, sticky="ew", pady=(0, 4))
         settings_row.columnconfigure(1, weight=1)
-        tk.Label(settings_row, text="Input Gain", font=("Segoe UI", 8), bg=self.CARD, fg=self.DIM).grid(row=0, column=0, sticky="w")
+        tk.Label(settings_row, text="Input Gain", font=(APP_FONT, 8), bg=self.CARD, fg=self.DIM).grid(row=0, column=0, sticky="w")
         gain = tk.Scale(settings_row, from_=0.0, to=5.0, resolution=0.01, orient="horizontal", showvalue=True,
                         variable=self.voice_input_gain_var, bg=self.CARD, fg=self.TEXT, troughcolor=self.BG,
                         activebackground=self.GREEN, highlightthickness=0, borderwidth=0)
         gain.grid(row=0, column=1, sticky="ew", padx=(8, 0))
-        tk.Label(settings_row, text="Noise Gate", font=("Segoe UI", 8), bg=self.CARD, fg=self.DIM).grid(row=1, column=0, sticky="w", pady=(6, 0))
+        tk.Label(settings_row, text="Noise Gate", font=(APP_FONT, 8), bg=self.CARD, fg=self.DIM).grid(row=1, column=0, sticky="w", pady=(6, 0))
         gate = tk.Scale(settings_row, from_=0.0, to=0.25, resolution=0.001, orient="horizontal", showvalue=True,
                         variable=self.voice_noise_gate_var, bg=self.CARD, fg=self.TEXT, troughcolor=self.BG,
                         activebackground=self.GREEN, highlightthickness=0, borderwidth=0)
         gate.grid(row=1, column=1, sticky="ew", padx=(8, 0), pady=(6, 0))
-        tk.Label(settings_row, text="Output Volume", font=("Segoe UI", 8), bg=self.CARD, fg=self.DIM).grid(row=2, column=0, sticky="w", pady=(6, 0))
+        tk.Label(settings_row, text="Output Volume", font=(APP_FONT, 8), bg=self.CARD, fg=self.DIM).grid(row=2, column=0, sticky="w", pady=(6, 0))
         outv = tk.Scale(settings_row, from_=0.0, to=5.0, resolution=0.01, orient="horizontal", showvalue=True,
                         variable=self.voice_output_volume_var, bg=self.CARD, fg=self.TEXT, troughcolor=self.BG,
                         activebackground=self.GREEN, highlightthickness=0, borderwidth=0)
@@ -1745,7 +1803,7 @@ class OLTogetherApp(tk.Tk):
         self.voice_output_volume_var.trace_add("write", lambda *_: self._sync_voice_settings())
         self.after(50, self._mic_meter_tick)
         btn_frame = tk.Frame(card, bg=self.CARD)
-        btn_frame.grid(row=16, column=0, columnspan=4, sticky="ew", pady=(10, 0))
+        btn_frame.grid(row=17, column=0, columnspan=4, sticky="ew", pady=(10, 0))
         btn_frame.columnconfigure((0, 1, 2, 3), weight=1)
         for col, (txt, cmd, clr) in enumerate([
             ("GENERATE CODE", self._generate_code, self.DIM),
@@ -1763,8 +1821,8 @@ class OLTogetherApp(tk.Tk):
         row0 = tk.Frame(card, bg=self.CARD)
         row0.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
         row0.columnconfigure(1, weight=1)
-        tk.Label(row0, text="Search", font=("Segoe UI", 9), bg=self.CARD, fg=self.DIM).grid(row=0, column=0, padx=(0, 6))
-        se = tk.Entry(row0, textvariable=self.search_var, bg=self.INPUT_BG, fg=self.TEXT, insertbackground=self.CYAN, font=("Segoe UI", 9), relief="flat", highlightthickness=1, highlightbackground=self.BORDER, highlightcolor=self.CYAN)
+        tk.Label(row0, text="Search", font=(APP_FONT, 9), bg=self.CARD, fg=self.DIM).grid(row=0, column=0, padx=(0, 6))
+        se = tk.Entry(row0, textvariable=self.search_var, bg=self.INPUT_BG, fg=self.TEXT, insertbackground=self.CYAN, font=(APP_FONT, 9), relief="flat", highlightthickness=1, highlightbackground=self.BORDER, highlightcolor=self.CYAN)
         se.grid(row=0, column=1, sticky="ew", padx=(0, 8))
         self.search_var.trace_add("write", lambda *_: self._refresh_browser())
         for col, (var, opts) in enumerate([
@@ -1775,7 +1833,7 @@ class OLTogetherApp(tk.Tk):
         ]):
             var.trace_add("write", lambda *_: self._refresh_browser())
             om = tk.OptionMenu(row0, var, var.get(), *opts)
-            om.configure(bg=self.CARD, fg=self.TEXT, activebackground=self.CYAN, activeforeground=self.BG, highlightthickness=0, bd=0, font=("Segoe UI", 9))
+            om.configure(bg=self.CARD, fg=self.TEXT, activebackground=self.CYAN, activeforeground=self.BG, highlightthickness=0, bd=0, font=(APP_FONT, 9))
             om["menu"].configure(bg=self.CARD, fg=self.TEXT, activebackground=self.CYAN, activeforeground=self.BG)
             om.grid(row=0, column=col + 2, padx=3)
         refresh_btn = self._neon_button(row0, "REFRESH", self._refresh_browser, self.BLUE)
@@ -1804,9 +1862,9 @@ class OLTogetherApp(tk.Tk):
         # ---- Master Servers panel (below room list) ----
         ms_header = tk.Frame(card, bg=self.CARD)
         ms_header.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(10, 2))
-        tk.Label(ms_header, text="MASTER SERVERS", font=("Segoe UI", 9, "bold"),
+        tk.Label(ms_header, text="MASTER SERVERS", font=(APP_FONT, 9, "bold"),
                  bg=self.CARD, fg=self.CYAN).pack(side="left")
-        add_btn = tk.Label(ms_header, text="+ Add", font=("Segoe UI", 8), bg=self.CARD,
+        add_btn = tk.Label(ms_header, text="+ Add", font=(APP_FONT, 8), bg=self.CARD,
                            fg=self.GREEN, cursor="hand2", padx=6)
         add_btn.pack(side="right")
         add_btn.bind("<Button-1>", lambda _: self._ms_add())
@@ -1819,8 +1877,8 @@ class OLTogetherApp(tk.Tk):
     def _build_footer(self, parent):
         footer = tk.Frame(parent, bg=self.BG)
         footer.pack(fill="x", pady=(10, 0))
-        tk.Label(footer, textvariable=self.stats_var, font=("Segoe UI", 9), bg=self.BG, fg=self.DIM, anchor="w").pack(fill="x")
-        self.log_text = tk.Text(footer, height=7, bg=self.PANEL, fg=self.DIM, insertbackground=self.CYAN, font=("Consolas", 9), relief="flat", highlightthickness=1, highlightbackground=self.BORDER)
+        tk.Label(footer, textvariable=self.stats_var, font=(APP_FONT, 9), bg=self.BG, fg=self.DIM, anchor="w").pack(fill="x")
+        self.log_text = tk.Text(footer, height=7, bg=self.PANEL, fg=self.DIM, insertbackground=self.CYAN, font=(APP_FONT_MONO, 9), relief="flat", highlightthickness=1, highlightbackground=self.BORDER)
         self.log_text.pack(fill="x", pady=(6, 0))
 
     # -----------------------------------------------------------------------
@@ -1844,10 +1902,10 @@ class OLTogetherApp(tk.Tk):
                                 selectcolor=self.INPUT_BG, highlightthickness=0, bd=0)
             cb.pack(side="left")
             label = f"{srv['name']}  {srv['host']}:{srv['port']}"
-            tk.Label(row, text=label, font=("Segoe UI", 8), bg=self.CARD,
+            tk.Label(row, text=label, font=(APP_FONT, 8), bg=self.CARD,
                      fg=self.TEXT, anchor="w").pack(side="left", fill="x", expand=True)
             # remove button
-            rm = tk.Label(row, text="✕", font=("Segoe UI", 8), bg=self.CARD,
+            rm = tk.Label(row, text="✕", font=(APP_FONT, 8), bg=self.CARD,
                           fg=self.DIM, cursor="hand2", padx=4)
             rm.pack(side="right")
             rm.bind("<Button-1>", lambda _, i=idx: self._ms_remove(i))
@@ -1864,10 +1922,10 @@ class OLTogetherApp(tk.Tk):
         fields = [("Name", "My Server"), ("Host / IP", ""), ("Port", str(MASTER_SERVER_PORT))]
         entries = {}
         for r, (lbl, default) in enumerate(fields):
-            tk.Label(dlg, text=lbl, font=("Segoe UI", 9), bg=self.BG, fg=self.DIM).grid(
+            tk.Label(dlg, text=lbl, font=(APP_FONT, 9), bg=self.BG, fg=self.DIM).grid(
                 row=r, column=0, sticky="w", padx=10, pady=4)
             e = tk.Entry(dlg, bg=self.INPUT_BG, fg=self.TEXT, insertbackground=self.CYAN,
-                         font=("Segoe UI", 9), relief="flat", highlightthickness=1,
+                         font=(APP_FONT, 9), relief="flat", highlightthickness=1,
                          highlightbackground=self.BORDER, highlightcolor=self.CYAN, width=28)
             e.insert(0, default)
             e.grid(row=r, column=1, sticky="ew", padx=10, pady=4)
@@ -1887,9 +1945,9 @@ class OLTogetherApp(tk.Tk):
         btn_row = tk.Frame(dlg, bg=self.BG)
         btn_row.grid(row=len(fields), column=0, columnspan=2, pady=8)
         tk.Button(btn_row, text="Add", command=_ok, bg=self.GREEN, fg=self.BG,
-                  font=("Segoe UI", 9, "bold"), relief="flat", padx=14, pady=4).pack(side="left", padx=4)
+                  font=(APP_FONT, 9, "bold"), relief="flat", padx=14, pady=4).pack(side="left", padx=4)
         tk.Button(btn_row, text="Cancel", command=dlg.destroy, bg=self.CARD, fg=self.TEXT,
-                  font=("Segoe UI", 9), relief="flat", padx=10, pady=4).pack(side="left", padx=4)
+                  font=(APP_FONT, 9), relief="flat", padx=10, pady=4).pack(side="left", padx=4)
 
     def _ms_remove(self, idx: int):
         try:
@@ -1992,6 +2050,7 @@ class OLTogetherApp(tk.Tk):
                 data = json.load(f)
             self.game_path_var.set(data.get("game_path", self.game_path_var.get()))
             self.game_arch_var.set(data.get("game_arch", self.game_arch_var.get()))
+            self.game_extra_args_var.set(data.get("game_extra_args", self.game_extra_args_var.get()))
             # Sync the user-facing label after loading the internal key.
             if hasattr(self, "_arch_labels") and hasattr(self, "_arch_label_var"):
                 lbl = self._arch_labels.get(self.game_arch_var.get(), "64-bit")
@@ -2049,6 +2108,7 @@ class OLTogetherApp(tk.Tk):
         data = {
             "game_path": self.game_path_var.get().strip(),
             "game_arch": self.game_arch_var.get().strip() or "Win64",
+            "game_extra_args": self.game_extra_args_var.get().strip(),
             "player_name": self.name_var.get().strip(),
             "host": self.host_var.get().strip(),
             "port": self.port_var.get().strip(),
@@ -2172,10 +2232,27 @@ class OLTogetherApp(tk.Tk):
             url += f"?RoomToken={quote(_sha256(room.password), safe='')}"
         if room.speedrun_mode:
             url += "?SpeedrunMode=1"
+        # Split extra args into URL fragment (?Key=Val) and engine flags (-flag)
+        extra_raw = self.game_extra_args_var.get().strip()
+        extra_url_parts = []   # appended to the Unreal URL string
+        extra_flags = []       # passed as separate process arguments
+        if extra_raw:
+            for token in extra_raw.split():
+                if token.startswith("-"):
+                    extra_flags.append(token)
+                elif "=" in token or token.startswith("?"):
+                    extra_url_parts.append(token.lstrip("?"))
+                else:
+                    extra_flags.append(token)
+        if extra_url_parts:
+            url += "?" + "?".join(extra_url_parts)
+        cmd = [game_path, url] + extra_flags
+        self.log(f"Launching: {' '.join(cmd)}")
         try:
-            subprocess.Popen([game_path, url])
-        except Exception:
-            pass
+            subprocess.Popen(cmd)
+        except Exception as exc:
+            self.log(f"Launch failed: {exc}")
+            return
         self._start_voice_client(host, control_port)
 
     def _current_voice_settings(self) -> VoiceSettings:

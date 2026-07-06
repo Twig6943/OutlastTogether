@@ -5,12 +5,12 @@ echo ------------------------------------------
 echo OLTogether Multiplayer - Compile + Launch
 echo ------------------------------------------
 
-set UDK=C:\UDK\Custom\Binaries\Win32\UDK.com
-set SRC=C:\UDK\UDKGame\Script\Multiplayer.u
-set "GAME_DIR=C:\Program Files (x86)\Steam\steamapps\common\Outlast\OLGame\CookedPCConsole"
+set UDK=E:\Outlast-Level-Editor-main\Binaries\Win32\UDK.com
+set SRC=E:\Outlast-Level-Editor-main\UDKGame\Script\Multiplayer.u
+set GAME_DIR=D:\Games\Outlast - Script\OLGame\CookedPCConsole
 set DST_DIR=%GAME_DIR%\MultiplayerContent
 set DST=%DST_DIR%\Multiplayer.u
-set "GAME=C:\Program Files (x86)\Steam\steamapps\common\Outlast\Binaries\Win64\OLGame.exe"
+set GAME=D:\Games\Outlast - Script\Binaries\Win64\OLGame.exe
 set BRIDGE_SCRIPT=%~dp0OutlastTogether.py
 
 REM ------ Kill existing instances ------
