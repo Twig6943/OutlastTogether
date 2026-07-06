@@ -38,7 +38,7 @@ WORKDIR /build
 COPY . .
 
 RUN git clone https://github.com/superboo07/Outlast-Level-Editor /build/Outlast-Level-Editor && \
-    gdown 'https://drive.google.com/file/d/1EehECOFUQyXSqJyyMBF4Cd1tW59HoWuv' && \
+    gdown 'https://drive.google.com/uc?id=1EehECOFUQyXSqJyyMBF4Cd1tW59HoWuv' && \
     7z x 96778-udkinstall-2013-07.exe Binaries -o/build/Outlast-Level-Editor && \
     mkdir -p /build/Outlast-Level-Editor/Development/Src/Multiplayer && \
     cp -r /build/Classes/ /build/Outlast-Level-Editor/Development/Src/Multiplayer/ && \
