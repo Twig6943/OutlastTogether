@@ -40,7 +40,6 @@ python -m nuitka ^
     --windows-console-mode=attach ^
     --enable-plugin=tk-inter ^
     --include-data-files=app_icon.ico=app_icon.ico ^
-    --include-data-files=app_icon.png=app_icon.png ^
     --company-name="OutlastTogether" ^
     --product-name="OutlastTogether Launcher" ^
     --file-version=1.0.0.0 ^
