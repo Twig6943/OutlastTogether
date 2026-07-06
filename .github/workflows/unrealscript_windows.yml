@@ -29,6 +29,11 @@ jobs:
           mkdir -Force C:\Outlast-Level-Editor\Development\Src\Multiplayer
           Copy-Item -Recurse Classes C:\Outlast-Level-Editor\Development\Src\Multiplayer\
 
+      - name: Install .NET Framework 4.0
+        shell: pwsh
+        run: |
+          choco install -y dotnet4.0
+
       - name: Configure DefaultEngine.ini
         shell: pwsh
         run: |
@@ -43,8 +48,16 @@ jobs:
       - name: Compile UnrealScript
         shell: pwsh
         run: |
-          & "C:\Outlast-Level-Editor\Binaries\Win32\UDK.com" make -log
-          Get-Content "C:\Outlast-Level-Editor\UDKGame\Logs\UDK.log" -Tail 50
+          $proc = Start-Process -FilePath "C:\Outlast-Level-Editor\Binaries\Win32\UDK.com" -ArgumentList "make -log" -Wait -PassThru -NoNewWindow
+          Write-Host "Exit code: $($proc.ExitCode)"
+          Get-ChildItem "C:\Outlast-Level-Editor\UDKGame\Logs\"
+          if (Test-Path "C:\Outlast-Level-Editor\UDKGame\Logs\Launch.log") {
+            Get-Content "C:\Outlast-Level-Editor\UDKGame\Logs\Launch.log" -Tail 100
+          } elseif (Test-Path "C:\Outlast-Level-Editor\UDKGame\Logs\UDK.log") {
+            Get-Content "C:\Outlast-Level-Editor\UDKGame\Logs\UDK.log" -Tail 100
+          } else {
+            Get-ChildItem "C:\Outlast-Level-Editor\UDKGame\Logs\" -Recurse
+          }
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
