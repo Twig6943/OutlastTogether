@@ -37,6 +37,26 @@ jobs:
       - name: Set up software GPU (Mesa3D Lavapipe + DXVK)
         shell: pwsh
         run: |
+          # Check what's available
+          Write-Host "=== Vulkan loader check ==="
+          if (Test-Path "$env:SystemRoot\SysWOW64\vulkan-1.dll") {
+            Write-Host "vulkan-1.dll found in SysWOW64"
+          } else {
+            Write-Host "vulkan-1.dll NOT found in SysWOW64"
+          }
+          if (Test-Path "$env:SystemRoot\System32\vulkan-1.dll") {
+            Write-Host "vulkan-1.dll found in System32"
+          } else {
+            Write-Host "vulkan-1.dll NOT found in System32"
+          }
+
+          # Download Vulkan loader if missing
+          if (-not (Test-Path "$env:SystemRoot\SysWOW64\vulkan-1.dll")) {
+            Write-Host "Downloading Vulkan loader..."
+            curl -L -o "$env:TEMP\VulkanRT.exe" "https://sdk.lunarg.com/sdk/download/latest/windows/VulkanRT-installer.exe"
+            Start-Process -FilePath "$env:TEMP\VulkanRT.exe" -ArgumentList "/S" -Wait
+          }
+
           # Download Mesa3D (Lavapipe software Vulkan driver)
           curl -L -o "$env:TEMP\mesa.7z" "https://github.com/pal1000/mesa-dist-win/releases/download/26.1.3/mesa3d-26.1.3-release-msvc.7z"
           7z x "$env:TEMP\mesa.7z" -o"$env:TEMP\mesa" -y | Out-Null
@@ -76,12 +96,24 @@ jobs:
           $udkDir = "C:\Outlast-Level-Editor\Binaries\Win32"
           $lvp_icd = "$env:TEMP\mesa\x86\lvp_icd.x86.json"
           $env:VK_ICD_FILENAMES = $lvp_icd
+
+          Write-Host "=== Files in UDK dir ==="
+          Get-ChildItem $udkDir | Select-Object Name, Length | Format-Table
+
+          Write-Host "=== Launching UDK ==="
+          $sw = [System.Diagnostics.Stopwatch]::StartNew()
           $proc = Start-Process -FilePath $udk -ArgumentList "make -log" -PassThru -NoNewWindow `
             -WorkingDirectory $udkDir `
             -RedirectStandardError "$env:TEMP\udk_stderr.txt"
-          if (-not $proc.WaitForExit(300000)) {
+          Write-Host "PID: $($proc.Id)"
+          $exited = $proc.WaitForExit(120000)
+          $sw.Stop()
+          Write-Host "Elapsed: $($sw.Elapsed.TotalSeconds)s, Exited: $exited"
+          if (-not $exited) {
+            Write-Host "Process still running, checking for windows..."
+            Get-Process | Where-Object { $_.MainWindowTitle } | Format-Table Id, ProcessName, MainWindowTitle
             $proc.Kill()
-            Write-Host "##[error] UDK timed out after 5 minutes"
+            Write-Host "##[error] UDK timed out after 2 minutes"
           }
           Write-Host "Exit code: $($proc.ExitCode)"
           if (Test-Path $log) {
