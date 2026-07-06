@@ -17,7 +17,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Build container image
-        run: podman build -t outlast-launcher -f ci/Containerfile_launcher .
+        run: podman build -t outlast-launcher -f CI/Containerfile_launcher .
 
       - name: Extract binary from image
         run: |

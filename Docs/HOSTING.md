@@ -19,8 +19,8 @@ On the machine that will host the dedicated server, execute the following comman
 mkdir -p $HOME/Games/outlast
 git clone https://github.com/MeinaWithAI/OutlastTogether $HOME/Games/outlast
 cd $HOME/Games/outlast/Container
-podman build -t outlast -f ci/Containerfile .
-podman build --network=host -t outlast -f ci/Containerfile .
+podman build -t outlast -f CI/Containerfile .
+podman build --network=host -t outlast -f CI/Containerfile .
 ```
 
 ### Running the Container

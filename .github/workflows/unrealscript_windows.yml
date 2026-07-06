@@ -1,0 +1,53 @@
+name: Build UnrealScript (Windows)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Clone Outlast-Level-Editor
+        shell: pwsh
+        run: |
+          git clone https://github.com/superboo07/Outlast-Level-Editor C:\Outlast-Level-Editor
+
+      - name: Download and extract UDK
+        shell: pwsh
+        run: |
+          pip install gdown
+          gdown "https://drive.google.com/uc?id=1IZed_3QAivpnU2uPlSClFVs-YOZrIpcd" -O udkinstall.exe
+          7z x udkinstall.exe Binaries -oC:\Outlast-Level-Editor
+
+      - name: Copy Classes
+        shell: pwsh
+        run: |
+          mkdir -Force C:\Outlast-Level-Editor\Development\Src\Multiplayer
+          Copy-Item -Recurse Classes C:\Outlast-Level-Editor\Development\Src\Multiplayer\
+
+      - name: Configure DefaultEngine.ini
+        shell: pwsh
+        run: |
+          $ini = "C:\Outlast-Level-Editor\UDKGame\Config\DefaultEngine.ini"
+          $content = Get-Content $ini
+          $line = $content | Select-String -Pattern '^\+ModEditPackages=TAS$' | Select-Object -First 1
+          if (-not ($content -match '^\+ModEditPackages=Multiplayer$')) {
+            $content = $content -replace '^(\+ModEditPackages=TAS)$', "`$1`r`n+ModEditPackages=Multiplayer"
+            Set-Content $ini $content
+          }
+
+      - name: Compile UnrealScript
+        shell: pwsh
+        run: |
+          & "C:\Outlast-Level-Editor\Binaries\Win32\UDK.com" make
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: Multiplayer
+          path: C:\Outlast-Level-Editor\UDKGame\Script\Multiplayer.u
+          archive: false
