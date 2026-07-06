@@ -13,6 +13,8 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.request
+import webbrowser
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Callable, Dict, Optional, Tuple
@@ -22,6 +24,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 import tkinter.font as tkfont
 
+APP_VERSION = "1.0.0"
 
 # ---------------------------------------------------------------------------
 # Custom font: JetBrains Mono Bold
@@ -1522,6 +1525,7 @@ class OLTogetherApp(tk.Tk):
         self.password_var = tk.StringVar(value="")
         self.room_code_var = tk.StringVar(value=_generate_room_code())
         self.speedrun_mode_var = tk.BooleanVar(value=False)
+        self.check_updates_var = tk.BooleanVar(value=True)
         self.game_path_var = tk.StringVar(value="")
         self.game_arch_var = tk.StringVar(value="Win64")
         self.game_extra_args_var = tk.StringVar(value="")
@@ -1569,6 +1573,7 @@ class OLTogetherApp(tk.Tk):
         self.after(200, self._apply_alt_tab_fix)
         self.after(500, self._tick_stats)
         self.after(1000, self._refresh_browser)
+        self.after(2000, self._check_for_updates)
 
     def _build_ui(self):
         self._configure_styles()
@@ -1705,6 +1710,7 @@ class OLTogetherApp(tk.Tk):
         self._checkbox(card, 3, 2, "Allow Chat", self.allow_chat_var)
         self._checkbox(card, 3, 3, "Public", self.public_room_var)
         self._checkbox(card, 4, 1, "Speedrun Mode", self.speedrun_mode_var)
+        self._checkbox(card, 4, 2, "Check Updates", self.check_updates_var)
         self._field(card, 5, "Room Code", self.room_code_var)
         self._field(card, 6, "Password", self.password_var)
         self._field(card, 7, "Host IP", self.host_var)
@@ -2070,6 +2076,7 @@ class OLTogetherApp(tk.Tk):
                 self.room_code_var.set(cfg.room_code)
                 self.password_var.set(cfg.password)
                 self.speedrun_mode_var.set(cfg.speedrun_mode)
+            self.check_updates_var.set(data.get("check_updates", True))
             # Load theme settings
             theme = data.get("theme", {})
             if isinstance(theme, dict):
@@ -2113,6 +2120,7 @@ class OLTogetherApp(tk.Tk):
             "host": self.host_var.get().strip(),
             "port": self.port_var.get().strip(),
             "room": self._room_config().to_dict() | {"password": self.password_var.get().strip()},
+            "check_updates": self.check_updates_var.get(),
             "theme": {
                 "accent": self.theme_var.get(),
                 "dark_mode": self.theme_dark_var.get(),
@@ -2395,6 +2403,37 @@ class OLTogetherApp(tk.Tk):
 
     def _tick_stats(self):
         self.after(1500, self._tick_stats)
+
+    def _check_for_updates(self):
+        if not self.check_updates_var.get():
+            return
+        def check():
+            try:
+                import json
+                req = urllib.request.Request(
+                    "https://api.github.com/repos/MeinaWithAI/OutlastTogether/releases/latest",
+                    headers={"User-Agent": "OLTogether"}
+                )
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    data = json.loads(resp.read().decode())
+                latest_version = data.get("tag_name", "").lstrip("v")
+                current_version = APP_VERSION.lstrip("v")
+                
+                # Simple version comparison
+                def parse_version(v):
+                    return [int(x) if x.isdigit() else 0 for x in v.split(".")]
+                
+                if parse_version(latest_version) > parse_version(current_version):
+                    self.after(0, self._prompt_update, latest_version)
+            except Exception as e:
+                self.log(f"Failed to check for updates: {e}")
+                
+        threading.Thread(target=check, daemon=True).start()
+
+    def _prompt_update(self, latest_version):
+        msg = f"A new version of OutlastTogether ({latest_version}) is available!\n\nWould you like to download it now?"
+        if messagebox.askyesno("Update Available", msg):
+            webbrowser.open("https://github.com/MeinaWithAI/OutlastTogether/releases")
 
     def _on_close(self):
         if self.server_running:
