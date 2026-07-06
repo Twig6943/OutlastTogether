@@ -1,0 +1,38 @@
+{
+  //"game_path": "D:/Games/Outlast - Script",
+  //"game_arch": "Win64",
+  //"game_extra_args": "",
+  "player_name": "Player",
+  "host": "0.0.0.0",
+  "port": "7777",
+  "room": {
+    "room_name": "OLTogether Room",
+    "region": "Asia",
+    "player_limit": 8,
+    "unlimited": false,
+    "allow_chat": true,
+    "public_room": true,
+    //"room_code": "VC4AUA",
+    "password": "",
+    "speedrun_mode": false
+  },
+  "check_updates": true,
+  "theme": {
+    "accent": "Cyan",
+    "dark_mode": true
+  },
+  "mic_device": "Default",
+  "voice": {
+    "input_gain": 1.0,
+    "noise_gate": 0.02,
+    "output_volume": 1.0
+  },
+  "master_servers": [
+    {
+      "name": "Test",
+      "host": "74.81.32.241",
+      "port": 47778,
+      "enabled": true
+    }
+  ]
+}

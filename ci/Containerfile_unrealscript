@@ -1,7 +1,8 @@
 FROM ubuntu:24.04
 
 # Fun fact UDK.com is written with dotnet 4x it seems. Also makes use of
-# DX9 so that's why drivers are installed
+# DX9 so that's why drivers are installed, add/remove if you need -log if you need
+# more info. Sometimes it seems to provide stuff thats not there with otherwise.
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PROTON_ENABLE_WAYLAND=1
@@ -61,7 +62,7 @@ RUN mkdir -p $WINEPREFIX $XDG_RUNTIME_DIR && \
 
 # ---- Build under cage headless ----
 RUN wlheadless-run -c cage -- \
-        wine /build/Outlast-Level-Editor/Binaries/Win32/UDK.com make -log && \
+        wine /build/Outlast-Level-Editor/Binaries/Win32/UDK.com make && \
     echo "BUILD SUCCESS"
 
 # Debug

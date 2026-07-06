@@ -1,5 +1,5 @@
 __pycache__/
-server_config.json
+*venv/
 *.exe
 *.cmd
 
@@ -13,4 +13,3 @@ OutlastTogether.dist/
 OutlastTogether.onefile-build/
 OutlastTogetherLauncher.spec
 Config/
-
