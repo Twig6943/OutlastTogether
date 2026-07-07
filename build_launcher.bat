@@ -24,9 +24,9 @@ if errorlevel 1 (
 
 :: ── Clean previous output ───────────────────────────────────────
 echo [2/4] Cleaning previous build...
-if exist "OutlastTogether.dist"    rmdir /s /q "OutlastTogether.dist"
-if exist "OutlastTogether.build"   rmdir /s /q "OutlastTogether.build"
-if exist "OutlastTogetherLauncher.exe" del /f /q "OutlastTogetherLauncher.exe"
+if exist "OutlastLauncher.dist"    rmdir /s /q "OutlastLauncher.dist"
+if exist "OutlastLauncher.build"   rmdir /s /q "OutlastLauncher.build"
+if exist "OutlastLauncher.exe" del /f /q "OutlastLauncher.exe"
 
 :: ── Build with Nuitka ───────────────────────────────────────────
 echo [3/4] Compiling with Nuitka (this may take a minute)...
@@ -36,7 +36,7 @@ python -m nuitka ^
     --standalone ^
     --onefile ^
     --windows-icon-from-ico=app_icon.ico ^
-    --output-filename=OutlastTogetherLauncher.exe ^
+    --output-filename=OutlastLauncher.exe ^
     --windows-console-mode=attach ^
     --enable-plugin=tk-inter ^
     --include-data-files=app_icon.ico=app_icon.ico ^
@@ -46,6 +46,7 @@ python -m nuitka ^
     --product-version=1.0.0.0 ^
     --file-description="OutlastTogether Multiplayer Launcher" ^
     --copyright="OutlastTogether" ^
+    --mingw64 ^
     --assume-yes-for-downloads ^
     --nofollow-import-to=pytest ^
     --nofollow-import-to=unittest ^
@@ -63,8 +64,8 @@ if errorlevel 1 (
 echo.
 echo [4/4] Done!
 echo.
-if exist "OutlastTogetherLauncher.exe" (
-    echo  Output: %CD%\OutlastTogetherLauncher.exe
+if exist "OutlastLauncher.exe" (
+    echo  Output: %CD%\OutlastLauncher.exe
 ) else (
     echo  [WARN] Expected output file not found — check build logs above.
 )

@@ -1,0 +1,33 @@
+FROM ubuntu:24.04
+
+# This file is meant for hosting servers
+
+# Main port
+EXPOSE 7777/tcp
+EXPOSE 7777/udp
+
+# Master server
+EXPOSE 47778/tcp
+EXPOSE 47778/udp
+
+# Env vars
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Proton stuff
+ENV XDG_RUNTIME_DIR=/build/xdg
+ENV WLR_RENDERER=pixman
+
+# Dependencies
+RUN dpkg --add-architecture i386
+RUN apt-get update && apt-get install -y \
+    python3.12 python3.12-venv python3.12-tk
+
+WORKDIR /build
+
+COPY . .
+
+RUN python3.12 -m venv .venv && \
+    . .venv/bin/activate && \
+    python3.12 -m pip install -r requirements.txt
+
+CMD ["python3.12", "OutlastTogether.py", "--headless", "--config server_config.json"]

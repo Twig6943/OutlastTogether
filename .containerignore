@@ -1,0 +1,6 @@
+.git/
+OutlastLauncher.exe
+OutlastTogether.build/
+OutlastTogether.dist/
+OutlastTogether.onefile-build/
+nuitka-crash-report.xml
