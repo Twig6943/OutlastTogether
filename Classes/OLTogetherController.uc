@@ -277,6 +277,8 @@ event PostBeginPlay()
         ConnectionLink.IP = ServerAddress;
         ConnectionLink.Port = ServerPort;
         ConnectionLink.SetServer(ServerAddress, ServerPort);
+        if (Settings != None)
+            ConnectionLink.bFadeNearbyPlayers = Settings.bFadeNearbyPlayers;
     }
     LastVoiceControlSendTime = -999.0;
     PortStr = ResolveUrl(Url, "ControlPort");
@@ -436,7 +438,7 @@ event PlayerTick(float DeltaTime)
             $ (MyHero != None ? int(MyHero.PreciseHealth) : 100);
         ConnectionLink.SendText(Packet $ "\n");
     }
-    if (VoiceListener != None && VoiceListener.bClientConnected && Pawn != None && WorldInfo.TimeSeconds - LastVoiceControlSendTime > 0.05)
+        if (VoiceListener != None && VoiceListener.bClientConnected && Pawn != None && WorldInfo.TimeSeconds - LastVoiceControlSendTime > 0.05)
     {
         LastVoiceControlSendTime = WorldInfo.TimeSeconds;
         // Full 3D position + camera yaw (in degrees) for 3D spatial audio.
@@ -450,7 +452,10 @@ event PlayerTick(float DeltaTime)
         );
         VoiceListener.SendControl("PTT," $ int(bMicTransmitting));
         if (Settings != None)
+        {
             VoiceListener.SendControl("PROX," $ int(Settings.VoiceProximityNear) $ "," $ int(Settings.VoiceProximityFar));
+            VoiceListener.SendControl("MUTE," $ int(Settings.bMuteEveryone || Settings.bMuteRemotePlayer) $ "," $ int(Settings.bMuteEveryone));
+        }
     }
     if (Pawn != None && Pawn != LastModeledPawn)
     {
@@ -626,6 +631,8 @@ function ApplySettings()
     if (Settings == None) return;
     if (PlayerInput != None)
         PlayerInput.SaveConfig();
+    if (ConnectionLink != None)
+        ConnectionLink.bFadeNearbyPlayers = Settings.bFadeNearbyPlayers;
 }
 Function LoadCheckpoint(string Checkpoint)
 {
@@ -1035,7 +1042,8 @@ function OnReceiveData(string Data)
     if (Left(Data, 5) == "TALK,")
     {
         F = SplitString(Data, ",", true);
-        if (F.Length >= 2) bRemoteTalking = (int(F[1]) != 0);
+        if (F.Length >= 2)
+            bRemoteTalking = (int(F[1]) != 0) && !(Settings != None && Settings.bMuteRemotePlayer);
         return;
     }
     F = SplitString(Data, ",", true);

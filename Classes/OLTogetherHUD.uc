@@ -87,6 +87,7 @@ const EMOJI_CACHE_MAX = 320;
 const NUM_EMOJI_ANIMS = 6;
 
 var Font CachedRobotoFont;
+var Texture2D CachedCursorTex;
 
 function Font GetRobotoFont()
 {
@@ -1423,8 +1424,8 @@ function int NumSettingsRows()
 {
     switch (SettingsTab)
     {
-        case 0: return 4; // General
-        case 1: return 3; // Voice
+        case 0: return 7; // General
+        case 1: return 4; // Voice
         case 2: return 4; // Keybinds
         case 3: return NUM_MODEL_ROWS; // Models
     }
@@ -1462,6 +1463,9 @@ function string SettingsRowLabel(OLTogetherController PC, int RowIndex)
                 case 1: return "Mouse Smoothing";
                 case 2: return "Hide Player Names";
                 case 3: return "Auto Reconnect";
+                case 4: return "Reconnect Delay";
+                case 5: return "Nearby Player Fade";
+                case 6: return "Mute Remote Player";
             }
             break;
         case 1:
@@ -1470,6 +1474,7 @@ function string SettingsRowLabel(OLTogetherController PC, int RowIndex)
                 case 0: return "Mute Everyone";
                 case 1: return "Push To Talk";
                 case 2: return "Voice Proximity";
+                case 3: return "Mute Remote Player";
             }
             break;
         case 2:
@@ -1500,8 +1505,10 @@ function string SettingsRowValue(OLTogetherController PC, int RowIndex)
                 case 0: return PC.Settings.bPauseOnLossFocus ? "[x]" : "[ ]";
                 case 1: return (PC.PlayerInput != None && PC.PlayerInput.bEnableMouseSmoothing) ? "[x]" : "[ ]";
                 case 2: return PC.Settings.bHidePlayerNames ? "[x]" : "[ ]";
-                case 3: return PC.Settings.bAutoReconnect
-                            ? ("[x] (" $ int(PC.Settings.ReconnectDelay) $ "s)") : "[ ]";
+                case 3: return PC.Settings.bAutoReconnect ? "[x]" : "[ ]";
+                case 4: return int(PC.Settings.ReconnectDelay) $ "s";
+                case 5: return PC.Settings.bFadeNearbyPlayers ? "[x]" : "[ ]";
+                case 6: return PC.Settings.bMuteRemotePlayer ? "[x]" : "[ ]";
             }
             break;
         case 1:
@@ -1510,6 +1517,7 @@ function string SettingsRowValue(OLTogetherController PC, int RowIndex)
                 case 0: return PC.Settings.bMuteEveryone ? "[x]" : "[ ]";
                 case 1: return PC.Settings.bPushToTalk ? "[x]" : "[ ]";
                 case 2: return int(PC.Settings.VoiceProximityNear) $ "/" $ int(PC.Settings.VoiceProximityFar);
+                case 3: return PC.Settings.bMuteRemotePlayer ? "[x]" : "[ ]";
             }
             break;
         case 2:
@@ -1638,15 +1646,31 @@ function SettingsAdjust(OLTogetherController PC, int Direction)
                     PC.PlayerInput.SaveConfig();
                 }
                 break;
-            case 2: PC.Settings.bHidePlayerNames = !PC.Settings.bHidePlayerNames; break;
+            case 2:
+                PC.Settings.bHidePlayerNames = !PC.Settings.bHidePlayerNames;
+                break;
             case 3:
+                PC.Settings.bAutoReconnect = !PC.Settings.bAutoReconnect;
+                break;
+            case 4:
                 if (Direction == 0)
-                    PC.Settings.bAutoReconnect = !PC.Settings.bAutoReconnect;
-                else
                 {
-                    PC.Settings.ReconnectDelay = FClamp(PC.Settings.ReconnectDelay + Direction * 1.0, 1.0, 60.0);
-                    PC.Settings.bAutoReconnect = true;
+                    // Click cycles the delay up in 1s steps and wraps back to 1s.
+                    PC.Settings.ReconnectDelay += 1.0;
+                    if (PC.Settings.ReconnectDelay > 30.0)
+                        PC.Settings.ReconnectDelay = 1.0;
                 }
+                else
+                    PC.Settings.ReconnectDelay = FClamp(PC.Settings.ReconnectDelay + Direction * 1.0, 1.0, 60.0);
+                PC.Settings.bAutoReconnect = true;
+                break;
+            case 5:
+                PC.Settings.bFadeNearbyPlayers = !PC.Settings.bFadeNearbyPlayers;
+                if (PC.ConnectionLink != None)
+                    PC.ConnectionLink.bFadeNearbyPlayers = PC.Settings.bFadeNearbyPlayers;
+                break;
+            case 6:
+                PC.Settings.bMuteRemotePlayer = !PC.Settings.bMuteRemotePlayer;
                 break;
         }
     }
@@ -1654,7 +1678,9 @@ function SettingsAdjust(OLTogetherController PC, int Direction)
     {
         switch (SettingsHighlightedRow)
         {
-            case 0: PC.Settings.bMuteEveryone = !PC.Settings.bMuteEveryone; break;
+            case 0:
+                PC.Settings.bMuteEveryone = !PC.Settings.bMuteEveryone;
+                break;
             case 1:
                 PC.Settings.bPushToTalk = !PC.Settings.bPushToTalk;
                 if (PC.Settings.bPushToTalk)
@@ -1668,6 +1694,9 @@ function SettingsAdjust(OLTogetherController PC, int Direction)
                     PC.Settings.VoiceProximityNear = FClamp(PC.Settings.VoiceProximityNear + Direction * 100.0, 200.0, 2000.0);
                     PC.Settings.VoiceProximityFar = FClamp(PC.Settings.VoiceProximityFar + Direction * 200.0, 500.0, 5000.0);
                 }
+                break;
+            case 3:
+                PC.Settings.bMuteRemotePlayer = !PC.Settings.bMuteRemotePlayer;
                 break;
         }
     }
@@ -1724,10 +1753,36 @@ function UpdateSettingsOpenAnimation(float Delta)
     SettingsTabAnim = FClamp(SettingsTabAnim, 0.0, 1.0);
 }
 
+function Texture2D GetCursorTex()
+{
+    if (CachedCursorTex == None)
+        CachedCursorTex = Texture2D(DynamicLoadObject("menuassets.MouseCursor", class'Texture2D', true));
+    return CachedCursorTex;
+}
+
 function DrawCursor(float Alpha)
 {
     local float S;
     local byte A;
+    local Texture2D Tex;
+    local LinearColor LC;
+
+    A = byte(255.0 * Alpha);
+    Tex = GetCursorTex();
+    if (Tex != None)
+    {
+        // Anchor the cursor image by its top-left at the mouse point.
+        S = 32.0 * UIScale;
+        LC.R = 1.0;
+        LC.G = 1.0;
+        LC.B = 1.0;
+        LC.A = Alpha;
+        Canvas.SetPos(MouseX, MouseY);
+        Canvas.DrawTile(Tex, S, S, 0.0, 0.0, Tex.SizeX, Tex.SizeY, LC);
+        return;
+    }
+
+    // Fallback square cursor if the texture fails to load.
     S = 12.0 * UIScale;
     A = byte(220.0 * Alpha);
     Canvas.SetPos(MouseX - S * 0.5, MouseY - S * 0.5);

@@ -21,6 +21,9 @@ var config float VoiceProximityFar;
 // Silence the specific remote player (single-remote relay design).
 var config bool bMuteRemotePlayer;
 
+// Fade nearby players when very close (avoids view collision).
+var config bool bFadeNearbyPlayers;
+
 // Push-to-talk input mode.
 var config bool bPushToTalk;
 
@@ -58,6 +61,7 @@ function SeedDefaults()
     VoiceProximityNear = 800.0;
     VoiceProximityFar  = 2500.0;
     bMuteRemotePlayer  = false;
+    bFadeNearbyPlayers = false;
     bPushToTalk        = false;
     bAutoReconnect     = true;
     ReconnectDelay     = 5.0;
